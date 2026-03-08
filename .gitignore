@@ -15,3 +15,5 @@ src/osrf
 src/ros2
 src/ros-perception
 src/ros-tooling
+
+uros_ws/
