@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'tof_costmap_node = tof_costmap.tof_costmap_node:main',
         ],
     },
 )
