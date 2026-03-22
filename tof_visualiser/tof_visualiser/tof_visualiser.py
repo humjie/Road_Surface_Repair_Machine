@@ -1,0 +1,503 @@
+"""
+hole_visualiser_node.py
+━━━━━━━━━━━━━━━━━━━━━━━
+Subscribes to tof_costmap/result (std_msgs/String, JSON, LATCHED) and
+continuously republishes MarkerArray topics at publish_hz.
+
+Surface reconstruction — maths only, not visualised
+─────────────────────────────────────────────────────
+A cubic RectBivariateSpline is fitted to each cluster's (x, y, depth) grid
+and evaluated on a dense upsampled grid.  Volume and centroid are integrated
+over that smooth surface so they are more accurate than the raw grid sum.
+The smooth surface is NOT published — visualisation uses plain cubes so the
+display is crisp and unambiguous.
+
+Topics published
+─────────────────
+  tof_result/hole_markers    – one CUBE per hole cell, coloured by depth
+  tof_result/text_markers    – per-cluster floating labels (smooth vol/ctr)
+  tof_result/summary_markers – overall scan summary board
+"""
+
+import json
+
+import numpy as np
+from scipy.interpolate import RectBivariateSpline, NearestNDInterpolator
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import String, ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
+
+
+# ── QoS ──────────────────────────────────────────────────────────────────────
+LATCHED_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+
+
+# ── colour helpers ────────────────────────────────────────────────────────────
+def _lerp3(t, c0, c1):
+    return tuple(c0[i] + (c1[i] - c0[i]) * t for i in range(3))
+
+
+def hole_color(depth_m, depth_range_m):
+    """yellow (shallow) → orange-red → dark crimson (deep)"""
+    dr = max(depth_range_m, 1e-6)
+    t  = min(1.0, depth_m / dr)
+    if t < 0.5:
+        r, g, b = _lerp3(t * 2.0, (1.00, 0.85, 0.05), (1.00, 0.28, 0.05))
+    else:
+        r, g, b = _lerp3((t - 0.5) * 2.0, (1.00, 0.28, 0.05), (0.50, 0.02, 0.02))
+    return ColorRGBA(r=r, g=g, b=b, a=0.78 + 0.20 * t)
+
+
+def cluster_color(idx):
+    palette = [
+        (0.9, 0.6, 0.1),
+        (0.2, 0.8, 0.6),
+        (0.7, 0.3, 0.9),
+        (0.2, 0.6, 1.0),
+        (1.0, 0.4, 0.4),
+    ]
+    r, g, b = palette[idx % len(palette)]
+    return ColorRGBA(r=r, g=g, b=b, a=1.0)
+
+
+# ── Smooth volume & centroid via spline integration ───────────────────────────
+def smooth_volume_and_centroid(points, scan_step_m, upsample=4, smoothing=0.0):
+    """
+    Fit a cubic bivariate spline to the cluster's (x, y, depth) grid and
+    integrate over the dense upsampled surface to get accurate volume and
+    centroid.  Falls back to the raw grid sum when the cluster is too small
+    or geometrically degenerate (single row/column, < 4 cells).
+
+    Parameters
+    ──────────
+    points      : list of (x_m, y_m, depth_m)
+    scan_step_m : original sensor grid spacing (metres)
+    upsample    : dense grid subdivisions per original step
+    smoothing   : spline smoothing factor (0 = exact interpolation)
+
+    Returns
+    ───────
+    volume_m3  : float   total void volume in cubic metres
+    cx, cy, cz : float   volume-weighted centroid (cz is negative = below floor)
+    """
+    # ── Raw fallback (always computed; returned when spline is impossible) ─────
+    cell_area = scan_step_m ** 2
+    raw_vol = raw_cx = raw_cy = raw_cz = 0.0
+    for (x, y, d) in points:
+        v        = cell_area * d
+        raw_vol += v
+        raw_cx  += x * v
+        raw_cy  += y * v
+        raw_cz  += -(d / 2.0) * v          # centroid Z at mid-depth, below floor
+    if raw_vol > 0:
+        raw_cx /= raw_vol
+        raw_cy /= raw_vol
+        raw_cz /= raw_vol
+
+    if len(points) < 4:
+        return raw_vol, raw_cx, raw_cy, raw_cz
+
+    xs = np.array([p[0] for p in points])
+    ys = np.array([p[1] for p in points])
+    ds = np.array([p[2] for p in points])
+
+    gxs    = np.round(xs / scan_step_m).astype(int)
+    gys    = np.round(ys / scan_step_m).astype(int)
+    x_idxs = np.unique(gxs)
+    y_idxs = np.unique(gys)
+
+    if len(x_idxs) < 2 or len(y_idxs) < 2:
+        return raw_vol, raw_cx, raw_cy, raw_cz
+
+    x_unique = x_idxs * scan_step_m
+    y_unique  = y_idxs * scan_step_m
+
+    # Populate coarse depth grid
+    depth_grid = np.full((len(y_idxs), len(x_idxs)), np.nan)
+    xi_map = {v: i for i, v in enumerate(x_idxs)}
+    yi_map = {v: i for i, v in enumerate(y_idxs)}
+    for xi, yi, d in zip(gxs, gys, ds):
+        depth_grid[yi_map[yi], xi_map[xi]] = d
+
+    # Fill interior NaN gaps with nearest-neighbour
+    nan_mask = np.isnan(depth_grid)
+    if nan_mask.any():
+        known_yx  = np.column_stack(np.where(~nan_mask))
+        known_val = depth_grid[~nan_mask]
+        fill_yx   = np.column_stack(np.where(nan_mask))
+        nn = NearestNDInterpolator(known_yx, known_val)
+        depth_grid[nan_mask] = nn(fill_yx)
+
+    # Fit spline; fall back to linear then raw if it fails
+    try:
+        spline = RectBivariateSpline(
+            y_unique, x_unique, depth_grid, kx=3, ky=3, s=smoothing)
+    except Exception:
+        try:
+            spline = RectBivariateSpline(
+                y_unique, x_unique, depth_grid, kx=1, ky=1, s=smoothing)
+        except Exception:
+            return raw_vol, raw_cx, raw_cy, raw_cz
+
+    # Evaluate on dense grid
+    x_dense = np.linspace(x_unique[0], x_unique[-1],
+                          (len(x_unique) - 1) * upsample + 1)
+    y_dense = np.linspace(y_unique[0], y_unique[-1],
+                          (len(y_unique) - 1) * upsample + 1)
+
+    Z  = np.clip(spline(y_dense, x_dense), 0.0, None)   # shape (ny, nx)
+
+    # Numerical integration using the trapezoidal rule over the dense grid.
+    # Cell area on the dense grid:
+    dx = (x_unique[-1] - x_unique[0]) / ((len(x_unique) - 1) * upsample)
+    dy = (y_unique[-1] - y_unique[0]) / ((len(y_unique) - 1) * upsample)
+    cell_area_dense = dx * dy
+
+    XX, YY = np.meshgrid(x_dense, y_dense)
+
+    vols = Z * cell_area_dense                         # volume of each tiny column
+    total_vol = float(vols.sum())
+
+    if total_vol == 0.0:
+        return raw_vol, raw_cx, raw_cy, raw_cz
+
+    cx = float((XX * vols).sum()) / total_vol
+    cy = float((YY * vols).sum()) / total_vol
+    cz = float((-(Z / 2.0) * vols).sum()) / total_vol  # mid-depth, below floor
+
+    return total_vol, cx, cy, cz
+
+
+# ── Node ─────────────────────────────────────────────────────────────────────
+class HoleVisualiserNode(Node):
+    def __init__(self):
+        super().__init__('hole_visualiser_node')
+
+        self.declare_parameter('result_topic',       'tof_costmap/result')
+        self.declare_parameter('frame_id',           'tof_sensor_link')
+        self.declare_parameter('hole_depth_range_m', 0.10)
+        self.declare_parameter('summary_z_m',        0.15)
+        self.declare_parameter('text_scale_m',       0.05)
+        self.declare_parameter('publish_hz',         1.0)
+        # Spline upsample & smoothing — affect maths accuracy only, not display
+        self.declare_parameter('mesh_upsample',      4)
+        self.declare_parameter('mesh_smoothing',     0.0)
+
+        self.result_topic       = self.get_parameter('result_topic').value
+        self.frame_id           = self.get_parameter('frame_id').value
+        self.hole_depth_range_m = float(self.get_parameter('hole_depth_range_m').value)
+        self.summary_z_m        = float(self.get_parameter('summary_z_m').value)
+        self.text_scale_m       = float(self.get_parameter('text_scale_m').value)
+        publish_hz              = float(self.get_parameter('publish_hz').value)
+        self.mesh_upsample      = int(self.get_parameter('mesh_upsample').value)
+        self.mesh_smoothing     = float(self.get_parameter('mesh_smoothing').value)
+
+        # Last parsed result and its smooth-computed stats per cluster
+        # { cluster_id: (vol_m3, cx, cy, cz) }
+        self._last_data:   dict = None
+        self._smooth_stats: dict = {}
+
+        self.sub = self.create_subscription(
+            String, self.result_topic, self._result_cb, LATCHED_QOS)
+
+        self.hole_pub    = self.create_publisher(MarkerArray, 'tof_result/hole_markers',    10)
+        self.text_pub    = self.create_publisher(MarkerArray, 'tof_result/text_markers',    10)
+        self.summary_pub = self.create_publisher(MarkerArray, 'tof_result/summary_markers', 10)
+
+        period = 1.0 / max(0.1, publish_hz)
+        self.timer = self.create_timer(period, self._timer_cb)
+
+        self.get_logger().info(
+            f'HoleVisualiserNode started\n'
+            f'  Subscribing to  : {self.result_topic}  (transient_local)\n'
+            f'  Publish rate    : {publish_hz:.1f} Hz\n'
+            f'  Hole markers    : tof_result/hole_markers  (cubes)\n'
+            f'  Text labels     : tof_result/text_markers\n'
+            f'  Summary board   : tof_result/summary_markers\n'
+            f'  Frame           : {self.frame_id}\n'
+            f'  Spline upsample : {self.mesh_upsample}×  '
+            f'(volume/centroid accuracy only)\n'
+            f'  Text scale      : {self.text_scale_m*1000:.0f} mm'
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _result_cb(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f'Failed to parse result JSON: {e}')
+            return
+
+        self._last_data    = data
+        self._smooth_stats = {}
+
+        clusters    = data.get('clusters', [])
+        scan_step_m = float(data.get('scan_step_m', 0.01))
+        baseline_m  = float(data.get('baseline_m', 0.0))
+
+        # Pre-compute smooth volume & centroid for every cluster once on receipt
+        for cluster in clusters:
+            cid    = cluster.get('id')
+            pts    = [(float(p['x']), float(p['y']), float(p['depth_m']))
+                      for p in cluster.get('points', [])]
+
+            vol, cx, cy, cz = smooth_volume_and_centroid(
+                pts, scan_step_m,
+                upsample=self.mesh_upsample,
+                smoothing=self.mesh_smoothing,
+            )
+            self._smooth_stats[cid] = (vol, cx, cy, cz)
+
+            self.get_logger().info(
+                f'  Cluster #{cid}: '
+                f'raw={cluster.get("volume_cm3",0):.2f} cm³  '
+                f'smooth={vol*1e6:.2f} cm³  '
+                f'centroid=({cx:.4f}, {cy:.4f}, {cz:.4f}) m'
+            )
+
+        self.get_logger().info(
+            f'New scan result — {len(clusters)} cluster(s), '
+            f'baseline={baseline_m:.4f} m'
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _timer_cb(self):
+        if self._last_data is None:
+            return
+        stamp       = self.get_clock().now().to_msg()
+        clusters    = self._last_data.get('clusters', [])
+        scan_step_m = float(self._last_data.get('scan_step_m', 0.01))
+
+        self._publish_hole_markers(clusters, scan_step_m, stamp)
+        self._publish_text_markers(clusters, scan_step_m, stamp)
+        self._publish_summary(self._last_data, stamp)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _send_deleteall(self, publisher, ns, stamp):
+        """Separate publish for DELETEALL — must not share batch with ADDs."""
+        ma = MarkerArray()
+        d  = Marker()
+        d.header.stamp    = stamp
+        d.header.frame_id = self.frame_id
+        d.ns              = ns
+        d.id              = 0
+        d.action          = Marker.DELETEALL
+        ma.markers.append(d)
+        publisher.publish(ma)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _publish_hole_markers(self, clusters, scan_step_m, stamp):
+        """
+        One CUBE per hole cell, coloured by depth.
+        Volume and centroid shown in labels come from the smooth spline
+        calculation, not from these cubes — so the display is crisp cubes
+        while the reported numbers reflect the smooth surface.
+        """
+        self._send_deleteall(self.hole_pub, 'hole_vis', stamp)
+
+        if not clusters:
+            return
+
+        ma      = MarkerArray()
+        next_id = 1
+
+        for ci, cluster in enumerate(clusters):
+            points = cluster.get('points', [])
+
+            # ── One CUBE per hole cell ────────────────────────────────────────
+            for pt in points:
+                x_m     = float(pt['x'])
+                y_m     = float(pt['y'])
+                depth_m = float(pt['depth_m'])
+                height  = max(depth_m, scan_step_m)
+
+                m                    = Marker()
+                m.header.stamp       = stamp
+                m.header.frame_id    = self.frame_id
+                m.ns                 = 'hole_vis'
+                m.id                 = next_id
+                m.type               = Marker.CUBE
+                m.action             = Marker.ADD
+                m.pose.orientation.w = 1.0
+                m.lifetime.sec       = 0
+                m.pose.position.x    = x_m
+                m.pose.position.y    = y_m
+                m.pose.position.z    = -(height / 2.0)  # hangs below Z=0
+                m.scale.x            = scan_step_m
+                m.scale.y            = scan_step_m
+                m.scale.z            = height
+                m.color              = hole_color(depth_m, self.hole_depth_range_m)
+                ma.markers.append(m)
+                next_id += 1
+
+            # ── Bounding-box outline per cluster ──────────────────────────────
+            if points:
+                xs = [float(p['x'])       for p in points]
+                ys = [float(p['y'])       for p in points]
+                ds = [float(p['depth_m']) for p in points]
+
+                bbox_cx = (min(xs) + max(xs)) / 2.0 + scan_step_m / 2.0
+                bbox_cy = (min(ys) + max(ys)) / 2.0 + scan_step_m / 2.0
+                bbox_w  = (max(xs) - min(xs)) + scan_step_m * 1.4
+                bbox_h  = (max(ys) - min(ys)) + scan_step_m * 1.4
+                bbox_d  = max(ds) * 1.1
+
+                b                    = Marker()
+                b.header.stamp       = stamp
+                b.header.frame_id    = self.frame_id
+                b.ns                 = 'hole_vis'
+                b.id                 = next_id
+                b.type               = Marker.CUBE
+                b.action             = Marker.ADD
+                b.pose.orientation.w = 1.0
+                b.lifetime.sec       = 0
+                b.pose.position.x    = bbox_cx
+                b.pose.position.y    = bbox_cy
+                b.pose.position.z    = -(bbox_d / 2.0)
+                b.scale.x            = bbox_w
+                b.scale.y            = bbox_h
+                b.scale.z            = max(bbox_d, scan_step_m)
+                cc                   = cluster_color(ci)
+                b.color              = ColorRGBA(r=cc.r, g=cc.g, b=cc.b, a=0.12)
+                ma.markers.append(b)
+                next_id += 1
+
+        self.hole_pub.publish(ma)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _publish_text_markers(self, clusters, scan_step_m, stamp):
+        """Labels use smooth-computed volume and centroid from _smooth_stats."""
+        self._send_deleteall(self.text_pub, 'hole_text', stamp)
+
+        if not clusters:
+            return
+
+        ma      = MarkerArray()
+        next_id = 1
+
+        for ci, cluster in enumerate(clusters):
+            cid   = cluster.get('id', ci + 1)
+            cells = cluster.get('cells', 0)
+            bc    = cluster_color(ci)
+
+            # Use smooth stats if available, else raw from JSON
+            if cid in self._smooth_stats:
+                vol_m3, cx, cy, cz = self._smooth_stats[cid]
+                vol_cm3 = vol_m3 * 1e6
+            else:
+                vol_cm3  = cluster.get('volume_cm3', 0.0)
+                centroid = cluster.get('centroid', {})
+                cx = float(centroid.get('x', 0))
+                cy = float(centroid.get('y', 0))
+                cz = float(centroid.get('z', 0))
+
+            t                    = Marker()
+            t.header.stamp       = stamp
+            t.header.frame_id    = self.frame_id
+            t.ns                 = 'hole_text'
+            t.id                 = next_id
+            t.type               = Marker.TEXT_VIEW_FACING
+            t.action             = Marker.ADD
+            t.pose.orientation.w = 1.0
+            t.lifetime.sec       = 0
+            t.pose.position.x    = cx
+            t.pose.position.y    = cy
+            t.pose.position.z    = cz + self.text_scale_m * 3.0
+            t.scale.z            = self.text_scale_m
+            t.color              = ColorRGBA(r=bc.r, g=bc.g, b=bc.b, a=1.0)
+            t.text = (
+                f'Cluster #{cid}\n'
+                f'Vol (smooth): {vol_cm3:.2f} cm\u00b3\n'
+                f'Cells       : {cells}\n'
+                f'Centroid    : ({cx:.3f}, {cy:.3f}, {cz:.3f}) m'
+            )
+            ma.markers.append(t)
+            next_id += 1
+
+        self.text_pub.publish(ma)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _publish_summary(self, data, stamp):
+        """Summary uses smooth-computed totals."""
+        self._send_deleteall(self.summary_pub, 'hole_summary', stamp)
+
+        clusters    = data.get('clusters', [])
+        baseline_m  = float(data.get('baseline_m', 0.0))
+
+        # Sum smooth volumes; fall back to raw if smooth not computed yet
+        total_vol   = sum(
+            self._smooth_stats[c['id']][0] * 1e6
+            if c['id'] in self._smooth_stats
+            else c.get('volume_cm3', 0.0)
+            for c in clusters
+        )
+        total_cells = sum(c.get('cells', 0) for c in clusters)
+
+        lines = [
+            '\u2500\u2500\u2500 Scan Complete \u2500\u2500\u2500',
+            f'Holes     : {len(clusters)}',
+            f'Total vol : {total_vol:.2f} cm\u00b3  (smooth)',
+            f'Cells     : {total_cells}',
+            f'Baseline  : {baseline_m:.4f} m',
+        ]
+        if clusters:
+            lines.append('\u2500\u2500\u2500 Per cluster \u2500\u2500\u2500')
+            for c in clusters:
+                cid = c['id']
+                if cid in self._smooth_stats:
+                    vol_m3, cx, cy, cz = self._smooth_stats[cid]
+                    vol_cm3 = vol_m3 * 1e6
+                else:
+                    vol_cm3 = c.get('volume_cm3', 0.0)
+                    ct      = c.get('centroid', {})
+                    cx, cy, cz = ct.get('x',0), ct.get('y',0), ct.get('z',0)
+                lines.append(
+                    f'  #{cid}  {vol_cm3:.2f} cm\u00b3'
+                    f'  ({cx:.3f}, {cy:.3f}, {cz:.3f}) m'
+                )
+
+        s                    = Marker()
+        s.header.stamp       = stamp
+        s.header.frame_id    = self.frame_id
+        s.ns                 = 'hole_summary'
+        s.id                 = 1
+        s.type               = Marker.TEXT_VIEW_FACING
+        s.action             = Marker.ADD
+        s.pose.orientation.w = 1.0
+        s.lifetime.sec       = 0
+        s.pose.position.x    = 0.0
+        s.pose.position.y    = 0.0
+        s.pose.position.z    = self.summary_z_m
+        s.scale.z            = self.text_scale_m
+        s.color              = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+        s.text               = '\n'.join(lines)
+
+        ma = MarkerArray()
+        ma.markers.append(s)
+        self.summary_pub.publish(ma)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+def main(args=None):
+    rclpy.init(args=args)
+    node = HoleVisualiserNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info('HoleVisualiserNode interrupted, shutting down.')
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
