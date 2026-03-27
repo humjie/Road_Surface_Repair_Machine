@@ -1,15 +1,15 @@
-## Main Repo of Road Surface Repair Machine for Engineering Innovative and Design (EID) Project
+# Main Repo of Road Surface Repair Machine for Engineering Innovative and Design (EID) Project
 
-# Team Members
+## Team Members
 Software & Electronics Team: Ming Jie, Jin Hern, Tze Nin, Zi Jun
 Mechanical Team: Sean, Pei Wen, Yan Sheng, Jack, Joel
 
 
-
-# install microros
+## Installation (Under Construction)
+1. install microros
 https://github.com/micro-ROS/micro_ros_setup
 
-# install foxglove
+2. install foxglove
 cd ~/ros2_jazzy/src
 git clone https://github.com/facontidavide/rosx_introspection.git
 git clone https://github.com/foxglove/foxglove-sdk.git
@@ -21,7 +21,7 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 
 ros2 run foxglove_bridge foxglove_bridge 
 
-# setup for camera
+3. setup for camera
 cd ~/ros2_jazzy/src
 git clone -b rolling https://github.com/ros-perception/vision_opencv.git
 cd ~/ros2_jazzy
@@ -29,3 +29,5 @@ sudo apt update
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --packages-select cv_bridge
+
+## More Coming Soon
