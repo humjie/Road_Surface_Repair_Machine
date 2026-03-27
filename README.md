@@ -1,3 +1,8 @@
+## Main Repo of Road Surface Repair Machine for Engineering Innovative and Design (EID) Project
+
+# Team Members
+Software & Electronics Team: Ming Jie, Jin Hern, Tze Nin, Zi Jun
+Mechanical Team: Sean, Pei Wen, Yan Sheng, Jack, Joel
 
 
 
