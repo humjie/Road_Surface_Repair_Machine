@@ -34,6 +34,8 @@ sudo apt update
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --packages-select cv_bridge
+
+ros2 run custom_camera custom_camera
 ```
 
 ## More Coming Soon
