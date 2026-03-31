@@ -20,7 +20,7 @@ cd ~/ros2_jazzy
 rosdep install --from-paths src --ignore-src --rosdistro jazzy -y
 colcon build --packages-up-to foxglove_bridge --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 source ~/ros2_jazzy/install/setup.bash
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
 
 ros2 run foxglove_bridge foxglove_bridge 
 ```
