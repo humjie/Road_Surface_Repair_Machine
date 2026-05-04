@@ -4,50 +4,29 @@
 - Software & Electronics Team: Ming Jie, Jin Hern, Tze Nin, Zi Jun
 - Mechanical Team: Sean, Pei Wen, Yan Sheng, Jack, Joel
 
+## TO-DO
+Software
+1) complete and integrate all node below
+2) stepper microros node: publish coordinate + time stamp 
+3) tof scan node: receive start command from foxglove - move stepper in fixed sequence - subscribe stepper coordinate + timestamp + tof data - fuse data - update costmap - publish hole centroid & volume - tell foxglove finish
+4) Material filling node: receive start command from foxglove - find best sequence - request move to stepper action node - request fill to pump action node - update costmap - loop until fill all - tell foxglove finish
+5) Stepper action node: receive request of coordinate - move to goal (including z axis!) - send back result say reached
+6) Pump action node: receive request of volume - pump material - send back result say filled
+7) Tof scan node: 
+8) tof node: subscribe to tof serial and publish
+9) camera node: subscribe to camera serial and publish
+10) foxglove show: tof costmap, camera view, wheel control button, tof scan start button, material filling start button, emergency stop button
 
-## Installation (Under Construction)
-1) install microros
-```bash
-https://github.com/micro-ROS/micro_ros_setup
-```
+Electrical
+1) Print upper board and attach all stuff
 
-2) install foxglove
-```bash
-cd ~/ros2_jazzy/src
-git clone https://github.com/facontidavide/rosx_introspection.git
-git clone https://github.com/foxglove/foxglove-sdk.git
-cd ~/ros2_jazzy
-rosdep install --from-paths src --ignore-src --rosdistro jazzy -y
-colcon build --packages-up-to foxglove_bridge --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
-source ~/ros2_jazzy/install/setup.bash
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml
-
-ros2 run foxglove_bridge foxglove_bridge 
-```
-
-3) setup for camera
-```bash
-cd ~/ros2_jazzy/src
-git clone -b rolling https://github.com/ros-perception/vision_opencv.git
-cd ~/ros2_jazzy
-sudo apt update
-rosdep update
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select cv_bridge
-
-ros2 run custom_camera custom_camera
-```
-
-4) install micro_ros
-```bash
-mkdir -p /microros_ws/src
-cd microros_ws
-git clone -b jazzy https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
-sudo apt update
-rosdep update
-rosdep install --from-paths src --ignore-src -y
-colcon build
-source install/local_setup.bash
-```
+Mechanical
+1) attach wheel
+2) test cam
+3) load simulation?
+4) z axis and pump attach
+5) material container design? Think put where and attach on the machine
+6) simulation? (Load test, etc)
+7) pump calculation? See put pump where is better
 
 ## More Coming Soon
