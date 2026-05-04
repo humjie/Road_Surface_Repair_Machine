@@ -33,7 +33,7 @@ Mechanical
 #### Start the micro-ROS Agent (Terminal 1)
 ```bash
 source /opt/ros/jazzy/setup.bash
-source ~/microros_ws/install/local_setup.bash
+source ~/Road_Surface_Repair_Machine/Software/microros_ws/install/local_setup.bash
 ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 115200
 ```
 
