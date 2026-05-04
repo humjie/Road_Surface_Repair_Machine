@@ -29,4 +29,17 @@ Mechanical
 6) simulation? (Load test, etc)
 7) pump calculation? See put pump where is better
 
+### To Run the walking motor
+#### Start the micro-ROS Agent (Terminal 1)
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/microros_ws/install/local_setup.bash
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 115200
+```
+
+#### Start the Foxglove Bridge (Terminal 2)
+```bash
+source /opt/ros/jazzy/setup.bash
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+```
 ## More Coming Soon
