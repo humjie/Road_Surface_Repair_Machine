@@ -24,7 +24,7 @@
 
 #define REAR_BIN1 18
 #define REAR_BIN2 5
-#define REAR_PWMB 17
+#define REAR_PWMB 4
 #define REAR_STBY 19
 
 // --- micro-ROS variables ---
@@ -91,7 +91,7 @@ void twist_callback(const void * msgin) {
 }
 
 void setup() {
-  set_microros_transports(); 
+  set_microros_serial_transports(Serial); 
 
   // Initialize all pins
   pinMode(LED_PIN, OUTPUT);

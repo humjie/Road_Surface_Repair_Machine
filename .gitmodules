@@ -10,3 +10,9 @@
 [submodule "Software/ros2_jazzy/src/vision_opencv"]
 	path = Software/ros2_jazzy/src/vision_opencv
 	url = https://github.com/ros-perception/vision_opencv.git
+[submodule "Software/ros2_jazzy/src/rosx_introspection"]
+	path = Software/ros2_jazzy/src/rosx_introspection
+	url = https://github.com/facontidavide/rosx_introspection.git
+[submodule "Software/ros2_jazzy/src/foxglove-sdk"]
+	path = Software/ros2_jazzy/src/foxglove-sdk
+	url = https://github.com/foxglove/foxglove-sdk.git

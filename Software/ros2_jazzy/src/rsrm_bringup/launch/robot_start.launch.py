@@ -8,7 +8,7 @@ def generate_launch_description():
         package='micro_ros_agent',
         executable='micro_ros_agent',
         name='agent_drive',
-        arguments=['serial', '--dev', '/dev/ttyUSB0', '-b', '115200'],
+        arguments=['serial', '--dev', '/dev/esp_wheel', '-b', '115200'],
         output='screen',
         respawn=True
     )
@@ -19,7 +19,7 @@ def generate_launch_description():
         package='micro_ros_agent',
         executable='micro_ros_agent',
         name='agent_gantry',
-        arguments=['serial', '--dev', '/dev/ttyUSB1', '-b', '115200'],
+        arguments=['serial', '--dev', '/dev/esp_stepper', '-b', '115200'],
         output='screen',
         respawn=True
     )
