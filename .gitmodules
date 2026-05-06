@@ -7,3 +7,6 @@
 [submodule "Software/ros2_jazzy/src/micro-ROS-Agent"]
 	path = Software/ros2_jazzy/src/micro-ROS-Agent
 	url = https://github.com/micro-ROS/micro-ROS-Agent.git
+[submodule "Software/ros2_jazzy/src/vision_opencv"]
+	path = Software/ros2_jazzy/src/vision_opencv
+	url = https://github.com/ros-perception/vision_opencv.git

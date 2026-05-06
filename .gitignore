@@ -18,4 +18,3 @@ src/ros-perception
 src/ros-tooling
 src/rosx_introspection
 src/foxglove-sdk
-src/vision_opencv
