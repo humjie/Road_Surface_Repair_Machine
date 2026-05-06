@@ -23,16 +23,16 @@
 // ========================================
 
 // ===== X AXIS =====
-#define X_DIR 12
-#define X_STEP 14
-#define X_MIN 18
-#define X_MAX 19
+#define Y_DIR 12
+#define Y_STEP 14
+#define Y_MIN 18
+#define Y_MAX 19
 
 // ===== Y AXIS =====
-#define Y_DIR 17
-#define Y_STEP 16
-#define Y_MIN 32
-#define Y_MAX 33
+#define X_DIR 17
+#define X_STEP 16
+#define X_MIN 32
+#define X_MAX 33
 
 // ===== 参数 =====
 const int STEP_DELAY = 800;
