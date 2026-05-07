@@ -34,20 +34,20 @@
 #define X_MIN 32
 #define X_MAX 33
 
-// ===== 参数 =====
+// ===== variables =====
 const int STEP_DELAY = 800;
 const int HOMING_DELAY = 1200;
 const int RELEASE_DELAY = 1500;
 const long MAX_STEPS = 40000;
 
-// ===== 位置 =====
+// ===== positions =====
 long xPos = 0, xMin = 0, xMax = 0;
 long yPos = 0, yMin = 0, yMax = 0;
 
 bool homingDone = false;
 
 // ========================================
-// 工具函数
+// Endstop Checks
 // ========================================
 bool X_MIN_PRESSED() { return digitalRead(X_MIN) == LOW; }
 bool X_MAX_PRESSED() { return digitalRead(X_MAX) == LOW; }
@@ -55,7 +55,7 @@ bool Y_MIN_PRESSED() { return digitalRead(Y_MIN) == LOW; }
 bool Y_MAX_PRESSED() { return digitalRead(Y_MAX) == LOW; }
 
 // ========================================
-// STEP 控制
+// STEP control
 // ========================================
 void stepX(int dir, int delayUs) {
   digitalWrite(X_DIR, (dir > 0));
@@ -76,7 +76,7 @@ void stepY(int dir, int delayUs) {
 }
 
 // ========================================
-// 通用移动（单轴）
+// Move X/Y by Steps with Endstop Checks
 // ========================================
 void moveXSteps(long steps, int delayUs) {
   int dir = (steps >= 0) ? 1 : -1;
@@ -109,7 +109,7 @@ bool homeX() {
   if (X_MIN_PRESSED()) while (X_MIN_PRESSED()) stepX(1, RELEASE_DELAY);
   if (X_MAX_PRESSED()) while (X_MAX_PRESSED()) stepX(-1, RELEASE_DELAY);
 
-  // 去 MAX
+  // go to MAX
   while (!X_MAX_PRESSED()) stepX(1, HOMING_DELAY);
   long maxPos = xPos;
 
@@ -117,7 +117,7 @@ bool homeX() {
 
   xPos = 0;
 
-  // 去 MIN
+  // go to MIN
   while (!X_MIN_PRESSED()) stepX(-1, HOMING_DELAY);
   long minPos = xPos;
   long travel = abs(xPos);
@@ -142,7 +142,7 @@ bool homeY() {
   if (Y_MIN_PRESSED()) while (Y_MIN_PRESSED()) stepY(1, RELEASE_DELAY);
   if (Y_MAX_PRESSED()) while (Y_MAX_PRESSED()) stepY(-1, RELEASE_DELAY);
 
-  // 去 MAX
+  // go to MAX
   while (!Y_MAX_PRESSED()) stepY(1, HOMING_DELAY);
   long maxPos = yPos;
 
@@ -150,7 +150,7 @@ bool homeY() {
 
   yPos = 0;
 
-  // 去 MIN
+  // go to MIN
   while (!Y_MIN_PRESSED()) stepY(-1, HOMING_DELAY);
   long minPos = yPos;
   long travel = abs(yPos);
@@ -169,7 +169,7 @@ bool homeY() {
 }
 
 // ========================================
-// ⭐ XY 同时移动（核心）
+// Move to Absolute XY with Endstop Checks
 // ========================================
 void moveToXY(long targetX, long targetY) {
 
@@ -285,7 +285,7 @@ void cmd_callback(const void * msgin) {
   if (cmd == "HOME") {
     execute_home = true;
   } 
-  else if (cmd == "POS?") {
+  else if (cmd == "POSE") {
     char status_str[50];
     snprintf(status_str, sizeof(status_str), "X: %ld Y: %ld", xPos, yPos);
     publish_status(status_str);

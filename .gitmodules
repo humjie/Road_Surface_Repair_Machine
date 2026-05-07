@@ -1,6 +1,3 @@
-[submodule "Software/microros_ws/src/micro_ros_setup"]
-	path = Software/microros_ws/src/micro_ros_setup
-	url = https://github.com/micro-ROS/micro_ros_setup.git
 [submodule "Software/ros2_jazzy/src/micro_ros_msgs"]
 	path = Software/ros2_jazzy/src/micro_ros_msgs
 	url = https://github.com/micro-ROS/micro_ros_msgs.git
