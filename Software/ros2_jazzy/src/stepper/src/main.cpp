@@ -9,6 +9,7 @@
 #include <std_msgs/msg/string.h> 
 #include <std_msgs/msg/int32.h>  
 #include <geometry_msgs/msg/point_stamped.h> // NEW: For timestamps and X/Y combined
+#include <geometry_msgs/msg/point.h>
 
 #if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
 #error This example is only available for Arduino framework with serial transport.
@@ -172,7 +173,7 @@ bool homeY() {
 // Move to Absolute XY with Endstop Checks
 // ========================================
 void moveToXY(long targetX, long targetY) {
-
+  // Use Bresenham-like algorithm to interleave X/Y steps so motion is coordinated
   if (!homingDone) {
     return;
   }
@@ -182,13 +183,44 @@ void moveToXY(long targetX, long targetY) {
     return;
   }
 
-  while (xPos != targetX || yPos != targetY) {
-    if (xPos != targetX) {
-      stepX((targetX > xPos) ? 1 : -1, STEP_DELAY);
-    }
+  long dx = targetX - xPos;
+  long dy = targetY - yPos;
+  int sx = (dx >= 0) ? 1 : -1;
+  int sy = (dy >= 0) ? 1 : -1;
+  dx = abs(dx);
+  dy = abs(dy);
 
-    if (yPos != targetY) {
-      stepY((targetY > yPos) ? 1 : -1, STEP_DELAY);
+  if (dx == 0 && dy == 0) return;
+
+  // If X is the dominant axis, step X each iteration and step Y when error accumulates.
+  if (dx >= dy) {
+    long err = dx / 2;
+    for (long i = 0; i < dx; i++) {
+      // Check endstops before stepping X
+      if ((sx > 0 && X_MAX_PRESSED()) || (sx < 0 && X_MIN_PRESSED())) break;
+      stepX(sx, STEP_DELAY);
+
+      err -= dy;
+      if (err < 0) {
+        err += dx;
+        // Check endstops before stepping Y
+        if ((sy > 0 && Y_MAX_PRESSED()) || (sy < 0 && Y_MIN_PRESSED())) break;
+        stepY(sy, STEP_DELAY);
+      }
+    }
+  } else {
+    // Y is dominant
+    long err = dy / 2;
+    for (long i = 0; i < dy; i++) {
+      if ((sy > 0 && Y_MAX_PRESSED()) || (sy < 0 && Y_MIN_PRESSED())) break;
+      stepY(sy, STEP_DELAY);
+
+      err -= dx;
+      if (err < 0) {
+        err += dy;
+        if ((sx > 0 && X_MAX_PRESSED()) || (sx < 0 && X_MIN_PRESSED())) break;
+        stepX(sx, STEP_DELAY);
+      }
     }
   }
 }
@@ -199,14 +231,12 @@ void moveToXY(long targetX, long targetY) {
 rcl_publisher_t status_publisher;
 rcl_publisher_t pos_publisher;
 
-rcl_subscription_t target_x_sub;
-rcl_subscription_t target_y_sub;
+rcl_subscription_t target_xy_sub;
 rcl_subscription_t cmd_sub;
 
 rcl_timer_t timer;
 
-std_msgs__msg__Int32 msg_x;
-std_msgs__msg__Int32 msg_y;
+geometry_msgs__msg__Point msg_target;
 geometry_msgs__msg__PointStamped msg_pos; // Replaces separate X and Y msgs
 std_msgs__msg__String msg_cmd;
 std_msgs__msg__String msg_status;
@@ -221,6 +251,8 @@ long targetX_ros = 0;
 long targetY_ros = 0;
 bool execute_move = false;
 bool execute_home = false;
+// Current continuous state string (published regularly)
+char current_state[64] = "available";
 
 // ========================================
 // ROS Callbacks
@@ -262,19 +294,20 @@ void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
 
     // 4. Publish
     rcl_publish(&pos_publisher, &msg_pos, NULL);
+
+    // 5. Publish the current status continuously
+    int32_t sec = time_ns / 1000000000;
+    snprintf(msg_status.data.data, msg_status.data.capacity, "[%ld] %s", sec, current_state);
+    msg_status.data.size = strlen(msg_status.data.data);
+    RCSOFTCHECK(rcl_publish(&status_publisher, &msg_status, NULL));
   }
 }
 
-void target_x_callback(const void * msgin) {
-  const std_msgs__msg__Int32 * msg = (const std_msgs__msg__Int32 *)msgin;
-  targetX_ros = msg->data;
-  execute_move = true; 
-}
-
-void target_y_callback(const void * msgin) {
-  const std_msgs__msg__Int32 * msg = (const std_msgs__msg__Int32 *)msgin;
-  targetY_ros = msg->data;
-  execute_move = true; 
+void target_xy_callback(const void * msgin) {
+  const geometry_msgs__msg__Point * msg = (const geometry_msgs__msg__Point *)msgin;
+  targetX_ros = (long)msg->x;
+  targetY_ros = (long)msg->y;
+  execute_move = true;
 }
 
 void cmd_callback(const void * msgin) {
@@ -284,6 +317,9 @@ void cmd_callback(const void * msgin) {
   
   if (cmd == "HOME") {
     execute_home = true;
+    strncpy(current_state, "homing", sizeof(current_state)-1);
+    current_state[sizeof(current_state)-1] = '\0';
+    publish_status("homing");
   } 
   else if (cmd == "POSE") {
     char status_str[50];
@@ -337,11 +373,8 @@ void setup() {
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, PointStamped), "current_pos"));
 
   // --- Subscribers ---
-  RCCHECK(rclc_subscription_init_default(&target_x_sub, &node,
-    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "target_x"));
-    
-  RCCHECK(rclc_subscription_init_default(&target_y_sub, &node,
-    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "target_y"));
+  RCCHECK(rclc_subscription_init_default(&target_xy_sub, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Point), "target_xy"));
     
   RCCHECK(rclc_subscription_init_default(&cmd_sub, &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "xy_cmd"));
@@ -352,14 +385,15 @@ void setup() {
 
   // --- Executor --- (Capacity 4: 3 Subscriptions + 1 Timer)
   RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
-  RCCHECK(rclc_executor_add_subscription(&executor, &target_x_sub, &msg_x, &target_x_callback, ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor, &target_y_sub, &msg_y, &target_y_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &target_xy_sub, &msg_target, &target_xy_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &cmd_sub, &msg_cmd, &cmd_callback, ON_NEW_DATA));
   
   // Synchronize time with the ROS 2 agent initially
   rmw_uros_sync_session(1000);
 
-  publish_status("XY READY");
+  strncpy(current_state, "available", sizeof(current_state)-1);
+  current_state[sizeof(current_state)-1] = '\0';
+  publish_status("available");
 }
 
 // ========================================
@@ -388,7 +422,9 @@ void loop() {
     homeX();
     homeY();
     homingDone = true;
-    publish_status("ALL HOMED");
+    strncpy(current_state, "available", sizeof(current_state)-1);
+    current_state[sizeof(current_state)-1] = '\0';
+    publish_status("available");
     
     targetX_ros = 0;
     targetY_ros = 0;
@@ -397,9 +433,21 @@ void loop() {
 
   // Handle XY Move requested from ROS
   if (execute_move) {
-    moveToXY(targetX_ros, targetY_ros);
-    publish_status("Arrived");
-    execute_move = false;
+    if (!homingDone) {
+      strncpy(current_state, "no home", sizeof(current_state)-1);
+      current_state[sizeof(current_state)-1] = '\0';
+      publish_status("no home");
+      execute_move = false;
+    } else {
+      strncpy(current_state, "moving", sizeof(current_state)-1);
+      current_state[sizeof(current_state)-1] = '\0';
+      publish_status("moving");
+      moveToXY(targetX_ros, targetY_ros);
+      strncpy(current_state, "available", sizeof(current_state)-1);
+      current_state[sizeof(current_state)-1] = '\0';
+      publish_status("available");
+      execute_move = false;
+    }
   }
 
   // Spin the ROS Executor (Handles subscriptions and runs the timer callback)
