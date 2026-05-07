@@ -32,25 +32,25 @@ void setup() {
 }
 
 void loop() {
-  // 1. Both Motors Forward (Speed 200 out of 255)
-  Serial.println("Both Motors: Forward");
-  moveMotors(200, 200);
-  delay(2000);
+  // // 1. Both Motors Forward (Speed 200 out of 255)
+  // Serial.println("Both Motors: Forward");
+  // moveMotors(200, 200);
+  // delay(2000);
 
-  // 2. Stop
-  Serial.println("Both Motors: Stop");
-  moveMotors(0, 0);
-  delay(1000);
+  // // 2. Stop
+  // Serial.println("Both Motors: Stop");
+  // moveMotors(0, 0);
+  // delay(1000);
 
-  // 3. Both Motors Backward
-  Serial.println("Both Motors: Backward");
-  moveMotors(-200, -200);
-  delay(2000);
+  // // 3. Both Motors Backward
+  // Serial.println("Both Motors: Backward");
+  // moveMotors(-200, -200);
+  // delay(2000);
 
-  // 4. Stop
-  Serial.println("Both Motors: Stop");
-  moveMotors(0, 0);
-  delay(1000);
+  // // 4. Stop
+  // Serial.println("Both Motors: Stop");
+  // moveMotors(0, 0);
+  // delay(1000);
 }
 
 // Helper function to handle direction and speed logic

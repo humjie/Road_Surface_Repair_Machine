@@ -18,13 +18,13 @@
 #define FRONT_STBY 33
 
 // --- TB6612FNG Pins for REAR Motors ---
-#define REAR_AIN1 21
-#define REAR_AIN2 22
-#define REAR_PWMA 23
+#define REAR_AIN1 18
+#define REAR_AIN2 5
+#define REAR_PWMA 4
 
-#define REAR_BIN1 18
-#define REAR_BIN2 5
-#define REAR_PWMB 4
+#define REAR_BIN1 21
+#define REAR_BIN2 22
+#define REAR_PWMB 23
 #define REAR_STBY 19
 
 // --- micro-ROS variables ---

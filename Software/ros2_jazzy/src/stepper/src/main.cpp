@@ -10,6 +10,7 @@
 #include <std_msgs/msg/int32.h>  
 #include <geometry_msgs/msg/point_stamped.h> // NEW: For timestamps and X/Y combined
 #include <geometry_msgs/msg/point.h>
+#include <math.h>
 
 #if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
 #error This example is only available for Arduino framework with serial transport.
@@ -24,22 +25,26 @@
 // ========================================
 
 // ===== X AXIS =====
-#define Y_DIR 12
-#define Y_STEP 14
-#define Y_MIN 18
-#define Y_MAX 19
+#define X_DIR 12
+#define X_STEP 14
+#define X_MIN 19
+#define X_MAX 18
 
 // ===== Y AXIS =====
-#define X_DIR 17
-#define X_STEP 16
-#define X_MIN 32
-#define X_MAX 33
+#define Y_DIR 17
+#define Y_STEP 16
+#define Y_MIN 32
+#define Y_MAX 33
 
 // ===== variables =====
 const int STEP_DELAY = 800;
 const int HOMING_DELAY = 1200;
 const int RELEASE_DELAY = 1500;
 const long MAX_STEPS = 40000;
+
+// Scan config (fixed sequence)
+const float STEPS_PER_MM = 1.0f;
+const float SCAN_STEP_MM = 50.0f; // 5 cm
 
 // ===== positions =====
 long xPos = 0, xMin = 0, xMax = 0;
@@ -230,9 +235,12 @@ void moveToXY(long targetX, long targetY) {
 // ========================================
 rcl_publisher_t status_publisher;
 rcl_publisher_t pos_publisher;
+rcl_publisher_t stepper_state_publisher;
+rcl_publisher_t minmax_publisher;
 
 rcl_subscription_t target_xy_sub;
 rcl_subscription_t cmd_sub;
+rcl_subscription_t main_cmd_sub;
 
 rcl_timer_t timer;
 
@@ -240,6 +248,9 @@ geometry_msgs__msg__Point msg_target;
 geometry_msgs__msg__PointStamped msg_pos; // Replaces separate X and Y msgs
 std_msgs__msg__String msg_cmd;
 std_msgs__msg__String msg_status;
+std_msgs__msg__String msg_stepper_state;
+std_msgs__msg__String msg_minmax;
+std_msgs__msg__String msg_main_cmd;
 
 rclc_executor_t executor;
 rclc_support_t support;
@@ -251,6 +262,7 @@ long targetX_ros = 0;
 long targetY_ros = 0;
 bool execute_move = false;
 bool execute_home = false;
+bool execute_scan = false;
 // Current continuous state string (published regularly)
 char current_state[64] = "available";
 
@@ -277,6 +289,12 @@ void publish_status(const char* status) {
   RCSOFTCHECK(rcl_publish(&status_publisher, &msg_status, NULL));
 }
 
+void publish_stepper_state(const char* state) {
+  snprintf(msg_stepper_state.data.data, msg_stepper_state.data.capacity, "%s", state);
+  msg_stepper_state.data.size = strlen(msg_stepper_state.data.data);
+  RCSOFTCHECK(rcl_publish(&stepper_state_publisher, &msg_stepper_state, NULL));
+}
+
 // Timer Callback: Continuously publishes the current X and Y coordinates with Timestamp
 void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
   if (timer != NULL) {
@@ -293,13 +311,26 @@ void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
     msg_pos.point.z = 0.0; // Z is unused
 
     // 4. Publish
-    rcl_publish(&pos_publisher, &msg_pos, NULL);
+    RCSOFTCHECK(rcl_publish(&pos_publisher, &msg_pos, NULL));
 
     // 5. Publish the current status continuously
     int32_t sec = time_ns / 1000000000;
     snprintf(msg_status.data.data, msg_status.data.capacity, "[%ld] %s", sec, current_state);
     msg_status.data.size = strlen(msg_status.data.data);
     RCSOFTCHECK(rcl_publish(&status_publisher, &msg_status, NULL));
+
+    // 6. Publish current XY min/max continuously
+    snprintf(
+      msg_minmax.data.data,
+      msg_minmax.data.capacity,
+      "xmin:%ld xmax:%ld ymin:%ld ymax:%ld",
+      xMin,
+      xMax,
+      yMin,
+      yMax
+    );
+    msg_minmax.data.size = strlen(msg_minmax.data.data);
+    RCSOFTCHECK(rcl_publish(&minmax_publisher, &msg_minmax, NULL));
   }
 }
 
@@ -320,12 +351,63 @@ void cmd_callback(const void * msgin) {
     strncpy(current_state, "homing", sizeof(current_state)-1);
     current_state[sizeof(current_state)-1] = '\0';
     publish_status("homing");
+    publish_stepper_state("homing");
   } 
   else if (cmd == "POSE") {
     char status_str[50];
     snprintf(status_str, sizeof(status_str), "X: %ld Y: %ld", xPos, yPos);
     publish_status(status_str);
   }
+}
+
+void main_cmd_callback(const void * msgin) {
+  const std_msgs__msg__String * msg = (const std_msgs__msg__String *)msgin;
+  String cmd = String(msg->data.data);
+  cmd.trim();
+
+  if (cmd == "START_SCAN" || cmd == "SCAN") {
+    execute_scan = true;
+  }
+}
+
+void run_scan_sequence() {
+  if (!homingDone) {
+    strncpy(current_state, "nohome", sizeof(current_state)-1);
+    current_state[sizeof(current_state)-1] = '\0';
+    publish_status("nohome");
+    publish_stepper_state("nohome");
+    return;
+  }
+
+  long step = (long)lround(SCAN_STEP_MM * STEPS_PER_MM);
+  if (step <= 0) {
+    step = 1;
+  }
+
+  strncpy(current_state, "scanning", sizeof(current_state)-1);
+  current_state[sizeof(current_state)-1] = '\0';
+  publish_status("scanning");
+  publish_stepper_state("scanning");
+
+  // Start at minimum corner
+  moveToXY(xMin, yMin);
+
+  bool forward = true;
+  for (long y = yMin; y <= yMax; y += step) {
+    long targetX = forward ? xMax : xMin;
+    moveToXY(targetX, y);
+    forward = !forward;
+
+    long nextY = y + step;
+    if (nextY <= yMax) {
+      moveToXY(targetX, nextY);
+    }
+  }
+
+  strncpy(current_state, "available", sizeof(current_state)-1);
+  current_state[sizeof(current_state)-1] = '\0';
+  publish_status("available");
+  publish_stepper_state("available");
 }
 
 // ========================================
@@ -352,9 +434,18 @@ void setup() {
   // Allocate memory for string buffers
   msg_cmd.data.capacity = 50;
   msg_cmd.data.data = (char *) malloc(msg_cmd.data.capacity * sizeof(char));
+
+  msg_main_cmd.data.capacity = 50;
+  msg_main_cmd.data.data = (char *) malloc(msg_main_cmd.data.capacity * sizeof(char));
   
   msg_status.data.capacity = 150; // Increased size to fit timestamp
   msg_status.data.data = (char *) malloc(msg_status.data.capacity * sizeof(char));
+
+  msg_stepper_state.data.capacity = 50;
+  msg_stepper_state.data.data = (char *) malloc(msg_stepper_state.data.capacity * sizeof(char));
+
+  msg_minmax.data.capacity = 80;
+  msg_minmax.data.data = (char *) malloc(msg_minmax.data.capacity * sizeof(char));
 
   // Allocate memory for the PointStamped frame_id string
   msg_pos.header.frame_id.capacity = 20;
@@ -372,6 +463,12 @@ void setup() {
   RCCHECK(rclc_publisher_init_default(&pos_publisher, &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, PointStamped), "current_pos"));
 
+  RCCHECK(rclc_publisher_init_default(&stepper_state_publisher, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "stepper_state"));
+
+  RCCHECK(rclc_publisher_init_default(&minmax_publisher, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "xy_minmax"));
+
   // --- Subscribers ---
   RCCHECK(rclc_subscription_init_default(&target_xy_sub, &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Point), "target_xy"));
@@ -379,21 +476,28 @@ void setup() {
   RCCHECK(rclc_subscription_init_default(&cmd_sub, &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "xy_cmd"));
 
+  RCCHECK(rclc_subscription_init_default(&main_cmd_sub, &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "main_cmd"));
+
   // --- Timer Setup (10 Hz / 100ms) ---
   const unsigned int timer_timeout = 100;
-  RCCHECK(rclc_timer_init_default(&timer, &support, RCL_MS_TO_NS(timer_timeout), timer_callback));
+  RCCHECK(rclc_timer_init_default2(&timer, &support, RCL_MS_TO_NS(timer_timeout), timer_callback, true));
 
-  // --- Executor --- (Capacity 4: 3 Subscriptions + 1 Timer)
-  RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
+  // --- Executor --- (Capacity 5: 4 Subscriptions + 1 Timer)
+  RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
   RCCHECK(rclc_executor_add_subscription(&executor, &target_xy_sub, &msg_target, &target_xy_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &cmd_sub, &msg_cmd, &cmd_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &main_cmd_sub, &msg_main_cmd, &main_cmd_callback, ON_NEW_DATA));
   
+  // ADD THIS LINE: Tell the executor to actually run the timer
+  RCCHECK(rclc_executor_add_timer(&executor, &timer));
   // Synchronize time with the ROS 2 agent initially
   rmw_uros_sync_session(1000);
 
   strncpy(current_state, "available", sizeof(current_state)-1);
   current_state[sizeof(current_state)-1] = '\0';
   publish_status("available");
+  publish_stepper_state("available");
 }
 
 // ========================================
@@ -425,6 +529,7 @@ void loop() {
     strncpy(current_state, "available", sizeof(current_state)-1);
     current_state[sizeof(current_state)-1] = '\0';
     publish_status("available");
+    publish_stepper_state("available");
     
     targetX_ros = 0;
     targetY_ros = 0;
@@ -434,20 +539,29 @@ void loop() {
   // Handle XY Move requested from ROS
   if (execute_move) {
     if (!homingDone) {
-      strncpy(current_state, "no home", sizeof(current_state)-1);
+      strncpy(current_state, "nohome", sizeof(current_state)-1);
       current_state[sizeof(current_state)-1] = '\0';
-      publish_status("no home");
+      publish_status("nohome");
+      publish_stepper_state("nohome");
       execute_move = false;
     } else {
       strncpy(current_state, "moving", sizeof(current_state)-1);
       current_state[sizeof(current_state)-1] = '\0';
       publish_status("moving");
+      publish_stepper_state("moving");
       moveToXY(targetX_ros, targetY_ros);
       strncpy(current_state, "available", sizeof(current_state)-1);
       current_state[sizeof(current_state)-1] = '\0';
       publish_status("available");
+      publish_stepper_state("available");
       execute_move = false;
     }
+  }
+
+  // Handle fixed scan sequence requested from ROS
+  if (execute_scan) {
+    run_scan_sequence();
+    execute_scan = false;
   }
 
   // Spin the ROS Executor (Handles subscriptions and runs the timer callback)
