@@ -38,10 +38,10 @@ void setup() {
 
 void loop() {
   Serial.println("Spinning 1 full revolution forward...");
-  // myStepper.step(stepsPerRev); // Move 200 steps forward
-  // delay(1000);
+  myStepper.step(stepsPerRev); // Move 200 steps forward
+  delay(1000);
 
-  // Serial.println("Spinning half revolution backward...");
-  // myStepper.step(-stepsPerRev / 2); // Move 100 steps backward
-  // delay(1000);
+  Serial.println("Spinning half revolution backward...");
+  myStepper.step(-stepsPerRev / 2); // Move 100 steps backward
+  delay(1000);
 }
