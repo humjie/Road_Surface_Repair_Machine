@@ -16,6 +16,7 @@ Software
 8) tof node: subscribe to tof serial and publish
 9) camera node: subscribe to camera serial and publish
 10) foxglove show: tof costmap, camera view, wheel control button, tof scan start button, material filling start button, emergency stop button
+11) launch file
 
 Electrical
 1) Print upper board and attach all stuff

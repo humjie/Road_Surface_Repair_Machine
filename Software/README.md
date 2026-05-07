@@ -43,3 +43,12 @@ rosdep install --from-paths src --ignore-src -y
 colcon build
 source install/local_setup.bash
 ```
+
+
+
+add the fixed sequence move function into stepper code. update respective scan algo in tof costmap node. follow the below flow:
+
+receive start command from a topic "main_cmd"? or other appropiate name - move stepper in fixed sequence while tof costmap node subscribe stepper coordinate + timestamp + tof data - fuse data - update costmap - publish hole centroid & volume - publish "main_state"
+
+integrate stepper state with main_state, combine them if necessary
+main_state topic will have multiple state such as "scanning, homing, available, nohome, filling, wheelmoving, etc". change the state name appropiately
