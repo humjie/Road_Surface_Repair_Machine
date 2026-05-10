@@ -12,7 +12,6 @@ Software
 4) Material filling node: receive start command from foxglove - find best sequence - request move to stepper action node - request fill to pump action node - update costmap - loop until fill all - tell foxglove finish
 5) Stepper action node: receive request of coordinate - move to goal (including z axis!) - send back result say reached
 6) Pump action node: receive request of volume - pump material - send back result say filled
-7) Tof scan node: 
 8) tof node: subscribe to tof serial and publish
 9) camera node: subscribe to camera serial and publish
 10) foxglove show: tof costmap, camera view, wheel control button, tof scan start button, material filling start button, emergency stop button
@@ -26,7 +25,6 @@ Mechanical
 2) test cam
 3) load simulation?
 4) z axis and pump attach
-5) material container design? Think put where and attach on the machine
 6) simulation? (Load test, etc)
 7) pump calculation? See put pump where is better
 
