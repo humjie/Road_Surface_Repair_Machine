@@ -27,8 +27,8 @@
 // ===== X AXIS =====
 #define X_DIR 12
 #define X_STEP 14
-#define X_MIN 19
-#define X_MAX 18
+#define X_MIN 18
+#define X_MAX 19
 
 // ===== Y AXIS =====
 #define Y_DIR 17
@@ -47,8 +47,11 @@ const float STEPS_PER_MM = 1.0f;
 const float SCAN_STEP_MM = 50.0f; // 5 cm
 
 // ===== positions =====
-long xPos = 0, xMin = 0, xMax = 0;
-long yPos = 0, yMin = 0, yMax = 0;
+long xPos = 0, xMin = -750, xMax = 750;  // xMin = -760, xMax = 760
+long yPos = 0, yMin = -700, yMax = 700;  // yMin = -711, yMax = 711
+
+// Use preset min/max and skip endstop discovery when homing
+const bool USE_PRESET_LIMITS = true;
 
 bool homingDone = false;
 
@@ -112,6 +115,13 @@ void moveYSteps(long steps, int delayUs) {
 // Homing X
 // ========================================
 bool homeX() {
+  if (USE_PRESET_LIMITS) {
+    // Just move to the center using the current position estimate
+    moveXSteps(0 - xPos, STEP_DELAY);
+    xPos = 0;
+    return true;
+  }
+
   if (X_MIN_PRESSED()) while (X_MIN_PRESSED()) stepX(1, RELEASE_DELAY);
   if (X_MAX_PRESSED()) while (X_MAX_PRESSED()) stepX(-1, RELEASE_DELAY);
 
@@ -145,6 +155,13 @@ bool homeX() {
 // Homing Y
 // ========================================
 bool homeY() {
+  if (USE_PRESET_LIMITS) {
+    // Just move to the center using the current position estimate
+    moveYSteps(0 - yPos, STEP_DELAY);
+    yPos = 0;
+    return true;
+  }
+
   if (Y_MIN_PRESSED()) while (Y_MIN_PRESSED()) stepY(1, RELEASE_DELAY);
   if (Y_MAX_PRESSED()) while (Y_MAX_PRESSED()) stepY(-1, RELEASE_DELAY);
 
@@ -493,6 +510,15 @@ void setup() {
   RCCHECK(rclc_executor_add_timer(&executor, &timer));
   // Synchronize time with the ROS 2 agent initially
   rmw_uros_sync_session(1000);
+
+  // Auto-home at startup to center the axes
+  strncpy(current_state, "homing", sizeof(current_state)-1);
+  current_state[sizeof(current_state)-1] = '\0';
+  publish_status("homing");
+  publish_stepper_state("homing");
+  homeX();
+  homeY();
+  homingDone = true;
 
   strncpy(current_state, "available", sizeof(current_state)-1);
   current_state[sizeof(current_state)-1] = '\0';
