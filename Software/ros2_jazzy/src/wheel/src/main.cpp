@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <micro_ros_arduino.h>
+#include <micro_ros_platformio.h>
 #include <rcl/rcl.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
@@ -41,7 +41,8 @@ unsigned long last_command_time = 0;
 
 void setup() {
   // Uses USB serial to talk to the micro-ROS agent on the Pi
-  set_microros_transports(); 
+  Serial.begin(115200);
+  set_microros_serial_transports(Serial);
 
   // Initialize FRONT Pins
   pinMode(FRONT_AIN1, OUTPUT); pinMode(FRONT_AIN2, OUTPUT); pinMode(FRONT_PWMA, OUTPUT);
