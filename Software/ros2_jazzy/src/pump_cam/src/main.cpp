@@ -20,25 +20,25 @@
 // =====================
 // Pump pins and settings
 // =====================
-#define PUMP_PWM_PIN 18
-#define PUMP_DIR_PIN 21
+#define PUMP_PWM_PIN 33
+#define PUMP_DIR_PIN 32
 #define PUMP_PWM_FREQ 5000
 #define PUMP_PWM_RES 8
 #define PUMP_PWM_ON 0
 #define PUMP_PWM_OFF 255
 
 // =====================
-// Cam motor pins/settings (update to match wiring)
+// Cam motors pins/settings (TB6612FNG Motor A & B)
 // =====================
 #define CAM_IN1_PIN 5
-#define CAM_IN2_PIN 19
-#define CAM_PWM_PIN 23
+#define CAM_IN2_PIN 18
+#define CAM_PWM_PIN 19
+#define CAM_IN3_PIN 23
+#define CAM_IN4_PIN 22
+#define CAM_PWM_PIN2 21
 #define CAM_STBY_PIN 17
-#define CAM_PWM_FREQ 5000
-#define CAM_PWM_RES 8
-#define CAM_PWM_ON 200
-#define CAM_PWM_OFF 0
-#define CAM_ROTATE_MS 800
+#define CAM_MOTOR_SPEED 200
+#define CAM_ROTATE_MS 500
 
 // =====================
 // Pump state
@@ -99,20 +99,28 @@ void cam_start(bool go_up) {
   if (go_up) {
     digitalWrite(CAM_IN1_PIN, HIGH);
     digitalWrite(CAM_IN2_PIN, LOW);
+    digitalWrite(CAM_IN3_PIN, HIGH);
+    digitalWrite(CAM_IN4_PIN, LOW);
   } else {
     digitalWrite(CAM_IN1_PIN, LOW);
     digitalWrite(CAM_IN2_PIN, HIGH);
+    digitalWrite(CAM_IN3_PIN, LOW);
+    digitalWrite(CAM_IN4_PIN, HIGH);
   }
-  ledcWrite(CAM_PWM_PIN, CAM_PWM_ON);
+  analogWrite(CAM_PWM_PIN, CAM_MOTOR_SPEED);
+  analogWrite(CAM_PWM_PIN2, CAM_MOTOR_SPEED);
   cam_active = true;
   cam_stop_ms = millis() + CAM_ROTATE_MS;
   cam_is_up = go_up;
 }
 
 void cam_stop() {
-  ledcWrite(CAM_PWM_PIN, CAM_PWM_OFF);
+  analogWrite(CAM_PWM_PIN, 0);
+  analogWrite(CAM_PWM_PIN2, 0);
   digitalWrite(CAM_IN1_PIN, LOW);
   digitalWrite(CAM_IN2_PIN, LOW);
+  digitalWrite(CAM_IN3_PIN, LOW);
+  digitalWrite(CAM_IN4_PIN, LOW);
   cam_active = false;
 }
 
@@ -165,10 +173,14 @@ void setup() {
 
   pinMode(CAM_IN1_PIN, OUTPUT);
   pinMode(CAM_IN2_PIN, OUTPUT);
+  pinMode(CAM_IN3_PIN, OUTPUT);
+  pinMode(CAM_IN4_PIN, OUTPUT);
   pinMode(CAM_STBY_PIN, OUTPUT);
   digitalWrite(CAM_STBY_PIN, HIGH);
-  ledcAttach(CAM_PWM_PIN, CAM_PWM_FREQ, CAM_PWM_RES);
-  ledcWrite(CAM_PWM_PIN, CAM_PWM_OFF);
+  pinMode(CAM_PWM_PIN, OUTPUT);
+  pinMode(CAM_PWM_PIN2, OUTPUT);
+  analogWrite(CAM_PWM_PIN, 0);
+  analogWrite(CAM_PWM_PIN2, 0);
 
   set_microros_serial_transports(Serial);
   delay(2000);

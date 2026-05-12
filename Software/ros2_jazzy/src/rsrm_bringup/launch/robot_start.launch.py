@@ -2,39 +2,94 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 def generate_launch_description():
-    # 1. micro-ROS Agent for 4x4 DRIVE (ESP32)
-    # Using /dev/ttyUSB0 as identified
-    agent_drive = Node(
+    agent_wheel = Node(
         package='micro_ros_agent',
         executable='micro_ros_agent',
-        name='agent_drive',
+        name='agent_wheel',
         arguments=['serial', '--dev', '/dev/esp_wheel', '-b', '115200'],
         output='screen',
-        respawn=True
+        respawn=True,
     )
 
-    # 2. micro-ROS Agent for X-Y GANTRY (Arduino/ESP32)
-    # Assuming the next one is /dev/ttyUSB1
-    agent_gantry = Node(
+    agent_stepper = Node(
         package='micro_ros_agent',
         executable='micro_ros_agent',
-        name='agent_gantry',
+        name='agent_stepper',
         arguments=['serial', '--dev', '/dev/esp_stepper', '-b', '115200'],
         output='screen',
-        respawn=True
+        respawn=True,
     )
 
-    # 3. Foxglove Bridge (Corrected Executable Name)
+    agent_zaxis = Node(
+        package='micro_ros_agent',
+        executable='micro_ros_agent',
+        name='agent_zaxis',
+        arguments=['serial', '--dev', '/dev/esp_zaxis', '-b', '115200'],
+        output='screen',
+        respawn=True,
+    )
+
+    agent_pump_cam = Node(
+        package='micro_ros_agent',
+        executable='micro_ros_agent',
+        name='agent_pump_cam',
+        arguments=['serial', '--dev', '/dev/esp_pump_cam', '-b', '115200'],
+        output='screen',
+        respawn=True,
+    )
+
+    main_state_repeater = Node(
+        package='main_state_repeater',
+        executable='main_state_repeater',
+        name='main_state_repeater',
+        output='screen',
+    )
+
+    tof_costmap = Node(
+        package='tof_costmap',
+        executable='tof_costmap_node',
+        name='tof_costmap_node',
+        output='screen',
+    )
+
+    tof_visualiser = Node(
+        package='tof_visualiser',
+        executable='tof_visualiser',
+        name='tof_visualiser',
+        output='screen',
+    )
+
+    filling_control = Node(
+        package='filling_control',
+        executable='filling_control',
+        name='filling_control',
+        output='screen',
+    )
+
+    custom_camera = Node(
+        package='custom_camera',
+        executable='custom_camera',
+        name='custom_camera',
+        output='screen',
+    )
+
     foxglove_bridge = Node(
         package='foxglove_bridge',
         executable='foxglove_bridge',
         name='foxglove_bridge',
         parameters=[{'port': 8765}],
-        output='screen'
+        output='screen',
     )
 
     return LaunchDescription([
-        agent_drive,
-        agent_gantry,
-        foxglove_bridge
+        agent_wheel,
+        agent_stepper,
+        agent_zaxis,
+        agent_pump_cam,
+        main_state_repeater,
+        tof_costmap,
+        tof_visualiser,
+        filling_control,
+        custom_camera,
+        foxglove_bridge,
     ])

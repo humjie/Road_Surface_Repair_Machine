@@ -1,7 +1,7 @@
 """
 hole_visualiser_node.py
 ━━━━━━━━━━━━━━━━━━━━━━━
-Subscribes to tof_costmap/result (std_msgs/String, JSON, LATCHED) and
+Subscribes to /tof_costmap (std_msgs/String, JSON, LATCHED) and
 continuously republishes MarkerArray topics at publish_hz.
 
 Surface reconstruction — maths only, not visualised
@@ -181,7 +181,7 @@ class HoleVisualiserNode(Node):
     def __init__(self):
         super().__init__('hole_visualiser_node')
 
-        self.declare_parameter('result_topic',       'tof_costmap/result')
+        self.declare_parameter('result_topic',       '/tof_costmap')
         self.declare_parameter('frame_id',           'tof_sensor_link')
         self.declare_parameter('hole_depth_range_m', 0.10)
         self.declare_parameter('summary_z_m',        0.15)
@@ -207,6 +207,7 @@ class HoleVisualiserNode(Node):
 
         self.sub = self.create_subscription(
             String, self.result_topic, self._result_cb, LATCHED_QOS)
+        self.result_pub = self.create_publisher(String, '/tof_result', LATCHED_QOS)
 
         self.hole_pub    = self.create_publisher(MarkerArray, 'tof_result/hole_markers',    10)
         self.text_pub    = self.create_publisher(MarkerArray, 'tof_result/text_markers',    10)
@@ -222,6 +223,7 @@ class HoleVisualiserNode(Node):
             f'  Hole markers    : tof_result/hole_markers  (cubes)\n'
             f'  Text labels     : tof_result/text_markers\n'
             f'  Summary board   : tof_result/summary_markers\n'
+            f'  Result topic    : /tof_result\n'
             f'  Frame           : {self.frame_id}\n'
             f'  Spline upsample : {self.mesh_upsample}×  '
             f'(volume/centroid accuracy only)\n'
@@ -267,6 +269,7 @@ class HoleVisualiserNode(Node):
             f'New scan result — {len(clusters)} cluster(s), '
             f'baseline={baseline_m:.4f} m'
         )
+        self._publish_result(data)
 
     # ──────────────────────────────────────────────────────────────────────────
     def _timer_cb(self):
@@ -279,6 +282,38 @@ class HoleVisualiserNode(Node):
         self._publish_hole_markers(clusters, scan_step_m, stamp)
         self._publish_text_markers(clusters, scan_step_m, stamp)
         self._publish_summary(self._last_data, stamp)
+
+    def _publish_result(self, data):
+        clusters = []
+        for cluster in data.get('clusters', []):
+            cid = cluster.get('id')
+            smooth = self._smooth_stats.get(cid)
+            if smooth is None:
+                smooth = (
+                    float(cluster.get('volume_cm3', 0.0)) / 1e6,
+                    float(cluster.get('centroid', {}).get('x', 0.0)),
+                    float(cluster.get('centroid', {}).get('y', 0.0)),
+                    float(cluster.get('centroid', {}).get('z', 0.0)),
+                )
+            vol_m3, cx, cy, cz = smooth
+            clusters.append({
+                **cluster,
+                'volume_cm3': round(vol_m3 * 1e6, 4),
+                'centroid': {'x': round(cx, 4), 'y': round(cy, 4), 'z': round(cz, 4)},
+                'smooth_volume_cm3': round(vol_m3 * 1e6, 4),
+                'smooth_centroid': {'x': round(cx, 4), 'y': round(cy, 4), 'z': round(cz, 4)},
+            })
+
+        payload = {
+            'baseline_m': float(data.get('baseline_m', 0.0)),
+            'scan_step_m': float(data.get('scan_step_m', 0.01)),
+            'total_holes': len(clusters),
+            'clusters': clusters,
+        }
+
+        msg = String()
+        msg.data = json.dumps(payload)
+        self.result_pub.publish(msg)
 
     # ──────────────────────────────────────────────────────────────────────────
     def _send_deleteall(self, publisher, ns, stamp):

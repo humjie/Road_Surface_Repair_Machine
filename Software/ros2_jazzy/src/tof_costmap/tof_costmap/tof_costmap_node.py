@@ -8,7 +8,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPo
 from sensor_msgs.msg import Range
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA, String
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import Point, PointStamped
 from std_srvs.srv import Trigger
 
 # TRANSIENT_LOCAL = "latched" in ROS 2.
@@ -30,9 +30,8 @@ class TofCostmapNode(Node):
         self.declare_parameter('input_topic',        'tof_data')
         self.declare_parameter('output_topic',       'tof_costmap/markers')
         self.declare_parameter('ground_plane_topic', 'tof_costmap/ground_plane')
-        self.declare_parameter('position_topic',     'current_pos')
-        self.declare_parameter('main_cmd_topic',     'main_cmd')
-        self.declare_parameter('stepper_state_topic','stepper_state')
+        self.declare_parameter('position_topic',     '/current_xy_pos')
+        self.declare_parameter('target_xy_topic',    'target_xy')
         self.declare_parameter('main_state_topic',   'main_state')
         self.declare_parameter('frame_id',           'tof_sensor_link')
 
@@ -59,8 +58,7 @@ class TofCostmapNode(Node):
         self.output_topic       = self.get_parameter('output_topic').value
         self.ground_plane_topic = self.get_parameter('ground_plane_topic').value
         self.position_topic     = self.get_parameter('position_topic').value
-        self.main_cmd_topic     = self.get_parameter('main_cmd_topic').value
-        self.stepper_state_topic = self.get_parameter('stepper_state_topic').value
+        self.target_xy_topic    = self.get_parameter('target_xy_topic').value
         self.main_state_topic   = self.get_parameter('main_state_topic').value
         self.frame_id           = self.get_parameter('frame_id').value
 
@@ -82,17 +80,17 @@ class TofCostmapNode(Node):
 
         self.current_baseline_m = self.sensor_to_ground_m
         self.cube_size_m        = self.scan_step_mm / 1000.0
+        self.target_tolerance_m  = max(self.cube_size_m * 0.25, 0.001)
 
         # ── State machine ─────────────────────────────────────────────────────
-        self.SCANNING_X = 'SCANNING_X'
-        self.STEPPING_Y = 'STEPPING_Y'
-        self.DONE       = 'DONE'
-        self._init_scan_state()
-
         self.scanning_active = False
         self._result_published = False
-        self.stepper_state = 'available'
-        self._last_main_state = None
+        self.main_state = 'free'
+        self._scan_path = []
+        self._scan_index = 0
+        self._current_target = None
+        self._last_target_sent = None
+        self.last_stamp_sec = None
 
         # ── Data stores ───────────────────────────────────────────────────────
         # (grid_x, grid_y) → (x_m, y_m, distance_m, is_hole)
@@ -108,23 +106,23 @@ class TofCostmapNode(Node):
         self.position_sub = self.create_subscription(
             PointStamped, self.position_topic, self.position_callback, 10)
 
-        self.main_cmd_sub = self.create_subscription(
-            String, self.main_cmd_topic, self.main_cmd_callback, 10)
+        self.main_state_sub = self.create_subscription(
+            String, self.main_state_topic, self.main_state_callback, 10)
 
-        self.stepper_state_sub = self.create_subscription(
-            String, self.stepper_state_topic, self.stepper_state_callback, 10)
-
+        self.change_main_state_pub = self.create_publisher(String, 'change_main_state', 10)
+        self.target_pub = self.create_publisher(Point, self.target_xy_topic, 10)
         self.marker_pub  = self.create_publisher(MarkerArray, self.output_topic,       10)
         self.ground_pub  = self.create_publisher(MarkerArray, self.ground_plane_topic, 10)
-        self.main_state_pub = self.create_publisher(String, self.main_state_topic, 10)
 
         # Result published ONCE at scan end as a JSON string.
         # Schema: { baseline_m, clusters: [ {id, cells, volume_cm3,
         #           centroid:{x,y,z}, points:[{x,y,depth_m},...] }, ... ] }
-        self.result_pub = self.create_publisher(String, 'tof_costmap/result', LATCHED_QOS)  # latched: visualiser receives even if late
+        self.result_pub = self.create_publisher(String, '/tof_costmap', LATCHED_QOS)  # latched: visualiser receives even if late
 
         self.reset_srv = self.create_service(
             Trigger, 'tof_costmap/reset', self._reset_callback)
+
+        self.timer = self.create_timer(0.05, self._scan_tick)
 
         self.get_logger().info(
             f'TofCostmapNode started\n'
@@ -132,10 +130,9 @@ class TofCostmapNode(Node):
             f'  Costmap markers    : {self.output_topic}\n'
             f'  Ground plane       : {self.ground_plane_topic}\n'
             f'  Position topic     : {self.position_topic}\n'
-            f'  Main cmd           : {self.main_cmd_topic}\n'
-            f'  Stepper state      : {self.stepper_state_topic}\n'
+            f'  Target XY topic    : {self.target_xy_topic}\n'
             f'  Main state         : {self.main_state_topic}\n'
-            f'  Result (once/scan) : tof_costmap/result  (JSON String)\n'
+            f'  Result (once/scan) : /tof_costmap  (JSON String)\n'
             f'  Reset service      : tof_costmap/reset\n'
             f'  Baseline           : {self.sensor_to_ground_m:.4f} m\n'
             f'  Hole tolerance     : {self.hole_tolerance_m:.4f} m\n'
@@ -145,17 +142,7 @@ class TofCostmapNode(Node):
         )
 
     # ──────────────────────────────────────────────────────────────────────────
-    def _init_scan_state(self):
-        self.state          = self.SCANNING_X
-        self.current_x_mm   = 0.0
-        self.current_y_mm   = 0.0
-        self.direction_x    = 1
-        self.target_y_mm    = 0.0
-        self.last_grid_cell = None
-        self.last_stamp_sec = None
-
     def _reset_callback(self, request, response):
-        self._init_scan_state()
         self.points_by_cell.clear()
         self.recent_readings.clear()
         self.position_buffer.clear()
@@ -163,10 +150,13 @@ class TofCostmapNode(Node):
         self.current_baseline_m = self.sensor_to_ground_m
         self.scanning_active = False
         self._result_published = False
+        self._scan_path = []
+        self._scan_index = 0
+        self._current_target = None
+        self._last_target_sent = None
         response.success = True
         response.message = 'Scan reset — ready for a new sweep.'
         self.get_logger().info('Scan reset via service call.')
-        self._publish_main_state()
         return response
 
     def position_callback(self, msg: PointStamped):
@@ -176,32 +166,23 @@ class TofCostmapNode(Node):
         self.position_buffer.append((stamp_sec, x_m, y_m))
         self._prune_position_buffer(stamp_sec)
 
-    def main_cmd_callback(self, msg: String):
-        cmd = msg.data.strip()
-        if cmd in ('START_SCAN', 'SCAN'):
-            self._start_scan()
-        elif cmd == 'RESET':
-            self._init_scan_state()
-            self.points_by_cell.clear()
-            self.recent_readings.clear()
-            self.position_buffer.clear()
-            self.last_grid_cell = None
-            self.current_baseline_m = self.sensor_to_ground_m
-            self.scanning_active = False
-            self._result_published = False
-            self._publish_main_state()
+    def main_state_callback(self, msg: String):
+        state = msg.data.strip() or 'free'
+        previous_state = self.main_state
+        self.main_state = state
 
-    def stepper_state_callback(self, msg: String):
-        self.stepper_state = msg.data.strip() or 'available'
-        if self.scanning_active and self.stepper_state == 'available':
+        if state == 'scanning':
+            if not self.scanning_active:
+                self._start_scan()
+            return
+
+        if previous_state == 'scanning' and self.scanning_active:
             self.scanning_active = False
             if not self._result_published:
                 self._publish_result_once()
                 self._result_published = True
-        self._publish_main_state()
 
     def _start_scan(self):
-        self._init_scan_state()
         self.points_by_cell.clear()
         self.recent_readings.clear()
         self.position_buffer.clear()
@@ -209,27 +190,90 @@ class TofCostmapNode(Node):
         self.current_baseline_m = self.sensor_to_ground_m
         self.scanning_active = True
         self._result_published = False
-        self._publish_main_state()
+        self._scan_path = self._build_scan_path()
+        self._scan_index = 0
+        self._current_target = None
+        self._last_target_sent = None
+        self._publish_next_target()
+
+    def _build_scan_path(self):
+        path = []
+        step = max(self.scan_step_mm, 1.0)
+        x_positions = list(self._frange(0.0, self.x_length_mm, step))
+        y_positions = list(self._frange(0.0, self.y_length_mm, step))
+        forward = True
+        for y_mm in y_positions:
+            xs = x_positions if forward else list(reversed(x_positions))
+            for x_mm in xs:
+                path.append((x_mm, y_mm))
+            forward = not forward
+        return path
+
+    @staticmethod
+    def _frange(start_mm: float, stop_mm: float, step_mm: float):
+        value = start_mm
+        while value <= stop_mm + 1e-9:
+            yield round(value, 6)
+            value += step_mm
+
+    def _publish_next_target(self):
+        if not self.scanning_active:
+            return
+
+        if self._scan_index >= len(self._scan_path):
+            if not self._result_published:
+                self._publish_result_once()
+                self._result_published = True
+            self._publish_change_main_state('free')
+            self.scanning_active = False
+            return
+
+        x_mm, y_mm = self._scan_path[self._scan_index]
+        self._current_target = (x_mm, y_mm)
+        if self._last_target_sent == self._current_target:
+            return
+
+        target = Point()
+        target.x = float(x_mm)
+        target.y = float(y_mm)
+        target.z = 0.0
+        self.target_pub.publish(target)
+        self._last_target_sent = self._current_target
+
+    def _publish_change_main_state(self, state: str):
+        msg = String()
+        msg.data = state
+        self.change_main_state_pub.publish(msg)
+
+    def _latest_position(self):
+        if not self.position_buffer:
+            return None
+        return self.position_buffer[-1][1], self.position_buffer[-1][2]
+
+    def _target_reached(self):
+        if self._current_target is None:
+            return False
+        current = self._latest_position()
+        if current is None:
+            return False
+        x_m, y_m = current
+        tx_m = self._current_target[0] * self.position_scale_m
+        ty_m = self._current_target[1] * self.position_scale_m
+        return abs(x_m - tx_m) <= self.target_tolerance_m and abs(y_m - ty_m) <= self.target_tolerance_m
+
+    def _scan_tick(self):
+        if not self.scanning_active:
+            return
+        if self._current_target is None:
+            self._publish_next_target()
+            return
+        if self._target_reached():
+            self._scan_index += 1
+            self._publish_next_target()
 
     def _prune_position_buffer(self, now_sec: float):
         while self.position_buffer and (now_sec - self.position_buffer[0][0]) > self.position_buffer_s:
             self.position_buffer.popleft()
-
-    def _combined_main_state(self) -> str:
-        if self.scanning_active:
-            return 'scanning'
-        if self.stepper_state:
-            return self.stepper_state
-        return 'available'
-
-    def _publish_main_state(self):
-        state = self._combined_main_state()
-        if state == self._last_main_state:
-            return
-        msg = String()
-        msg.data = state
-        self.main_state_pub.publish(msg)
-        self._last_main_state = state
 
     # ──────────────────────────────────────────────────────────────────────────
     def range_callback(self, msg: Range):
