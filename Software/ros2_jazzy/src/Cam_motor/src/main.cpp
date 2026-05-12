@@ -7,6 +7,14 @@
 #include <std_msgs/msg/bool.h>
 
 // --- TB6612FNG Pin Definitions ---
+#include <micro_ros_platformio.h>
+
+#include <rcl/rcl.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+#include <std_msgs/msg/bool.h>
+
+// --- TB6612FNG Pin Definitions ---
 #define AIN1 5
 #define AIN2 18
 #define PWMA 19
@@ -38,23 +46,54 @@ void error_loop() {
 }
 
 // Your original motor logic modified for simple movement
+// --- Cam Configuration ---
+const int MOVE_DURATION = 500; // Time in milliseconds to reach the next position
+const int MOTOR_SPEED = 200;    // PWM speed (0-255)
+bool wheel_is_down = false;
+
+// micro-ROS objects
+rcl_subscription_t subscriber;
+std_msgs__msg__Bool msg;
+rclc_executor_t executor;
+rcl_node_t node;
+rcl_allocator_t allocator;
+rclc_support_t support;
+
+#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){error_loop();}}
+
+void error_loop() {
+  while(1) {
+    digitalWrite(2, !digitalRead(2)); 
+    delay(100);
+  }
+}
+
+// Your original motor logic modified for simple movement
 void moveMotors(int speedA, int speedB) {
+  // Motor A logic
   // Motor A logic
   if (speedA > 0) {
     digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
+    digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
   } else if (speedA < 0) {
     digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);
+    digitalWrite(AIN1, LOW); digitalWrite(AIN2, HIGH);
   } else {
+    digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
     digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
   }
   analogWrite(PWMA, abs(speedA));
 
   // Motor B logic
+  // Motor B logic
   if (speedB > 0) {
+    digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
     digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
   } else if (speedB < 0) {
     digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH);
+    digitalWrite(BIN1, LOW); digitalWrite(BIN2, HIGH);
   } else {
+    digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
     digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
   }
   analogWrite(PWMB, abs(speedB));
