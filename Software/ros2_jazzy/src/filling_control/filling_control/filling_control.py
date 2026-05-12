@@ -21,13 +21,13 @@ class FillingControl(Node):
         super().__init__('filling_control')
 
         self.declare_parameter('result_topic', '/tof_result')
-        self.declare_parameter('main_state_topic', 'main_state')
-        self.declare_parameter('change_main_state_topic', 'change_main_state')
+        self.declare_parameter('main_state_topic', '/main_state')
+        self.declare_parameter('change_main_state_topic', '/change_main_state')
         self.declare_parameter('current_xy_topic', '/current_xy_pos')
         self.declare_parameter('current_z_topic', '/current_z_pos')
-        self.declare_parameter('target_xy_topic', 'target_xy')
-        self.declare_parameter('target_z_topic', 'target_z')
-        self.declare_parameter('pump_cmd_topic', 'pump_cmd')
+        self.declare_parameter('target_xy_topic', '/target_xy')
+        self.declare_parameter('target_z_topic', '/target_z')
+        self.declare_parameter('pump_cmd_topic', '/pump_cmd')
         self.declare_parameter('status_topic', 'filling_status')
 
         self.declare_parameter('position_scale_m', 0.001)

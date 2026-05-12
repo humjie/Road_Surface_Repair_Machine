@@ -27,12 +27,12 @@ class TofCostmapNode(Node):
         super().__init__('tof_costmap_node')
 
         # ── Topics & frame ────────────────────────────────────────────────────
-        self.declare_parameter('input_topic',        'tof_data')
+        self.declare_parameter('input_topic',        '/tof_data')
         self.declare_parameter('output_topic',       'tof_costmap/markers')
         self.declare_parameter('ground_plane_topic', 'tof_costmap/ground_plane')
         self.declare_parameter('position_topic',     '/current_xy_pos')
-        self.declare_parameter('target_xy_topic',    'target_xy')
-        self.declare_parameter('main_state_topic',   'main_state')
+        self.declare_parameter('target_xy_topic',    '/target_xy')
+        self.declare_parameter('main_state_topic',   '/main_state')
         self.declare_parameter('frame_id',           'tof_sensor_link')
 
         # ── Scan geometry ─────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ class TofCostmapNode(Node):
         self.main_state_sub = self.create_subscription(
             String, self.main_state_topic, self.main_state_callback, 10)
 
-        self.change_main_state_pub = self.create_publisher(String, 'change_main_state', 10)
+        self.change_main_state_pub = self.create_publisher(String, '/change_main_state', 10)
         self.target_pub = self.create_publisher(Point, self.target_xy_topic, 10)
         self.marker_pub  = self.create_publisher(MarkerArray, self.output_topic,       10)
         self.ground_pub  = self.create_publisher(MarkerArray, self.ground_plane_topic, 10)
