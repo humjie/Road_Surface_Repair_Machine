@@ -14,9 +14,9 @@ display is crisp and unambiguous.
 
 Topics published
 ─────────────────
-  tof_result/hole_markers    – one CUBE per hole cell, coloured by depth
-  tof_result/text_markers    – per-cluster floating labels (smooth vol/ctr)
-  tof_result/summary_markers – overall scan summary board
+  tof_result/hole_markers    - one CUBE per hole cell, coloured by depth
+  tof_result/text_markers    - per-cluster floating labels (smooth vol/ctr)
+  tof_result/summary_markers - overall scan summary board
 """
 
 import json

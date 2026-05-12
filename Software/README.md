@@ -57,8 +57,20 @@ ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/esp_stepper
 
 
 
+the stepper code should publish /change_main_state = wait_for_fill if 
 
 
+
+
+
+
+
+help me check and modify the code if necessary
+
+
+1) tof_costmap_node.py should always listen to /main_state, when /main_state become "scanning", it will start the operations. its main tasks is use the certain algo to control the stepper to scan through the range between x and y min max. the stepper will be control by /target_xy published by tof_costmap_node. while doing this, tof_costmap_node will subscribe to /current_xy_pos published by stepper and /tof_data published by tof_publisher. it will combine both message using the time stamp, and publish /tof_costmap
+
+2) stepper should always listen to /main_state, when /main_state = "homing", go home. 
 
 
 

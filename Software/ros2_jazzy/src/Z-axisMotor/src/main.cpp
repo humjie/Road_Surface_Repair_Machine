@@ -1,47 +1,42 @@
 #include <Arduino.h>
-#include <Stepper.h>
 
-// Change this to match your specific motor (200 is standard for NEMA 17)
-const int stepsPerRev = 200; 
+// Define ESP32 GPIO pin connections
+const int dirPin = 26;
+const int stepPin = 27;
 
-// TB6612FNG Pins connected to ESP32
-#define AIN1 21
-#define AIN2 22
-#define BIN1 18
-#define BIN2 5
-#define PWMA 23
-#define PWMB 17
-#define STBY 19
-
-// Initialize the Stepper library. 
-// The pin sequence for TB6612FNG is typically AIN1, BIN1, AIN2, BIN2
-Stepper myStepper(stepsPerRev, AIN1, BIN1, AIN2, BIN2);
+// Define motor steps per revolution (200 is standard for a 1.8 degree motor)
+const int stepsPerRev = 200;
 
 void setup() {
-  Serial.begin(115200);
-
-  // Set up the power and standby pins
-  pinMode(PWMA, OUTPUT);
-  pinMode(PWMB, OUTPUT);
-  pinMode(STBY, OUTPUT);
-
-  // Enable the motor driver and send full power to both channels
-  digitalWrite(PWMA, HIGH);
-  digitalWrite(PWMB, HIGH);
-  digitalWrite(STBY, HIGH);
-
-  // Set the motor speed (in RPM)
-  myStepper.setSpeed(60); 
-  
-  Serial.println("Stepper Motor Test Initialized.");
+  // Declare pins as output
+  pinMode(stepPin, OUTPUT);
+  pinMode(dirPin, OUTPUT);
 }
 
 void loop() {
-  Serial.println("Spinning 1 full revolution forward...");
-  myStepper.step(stepsPerRev); // Move 200 steps forward
-  delay(1000);
+  // 1. Set the spinning direction (HIGH = Clockwise)
+  digitalWrite(dirPin, HIGH);
 
-  Serial.println("Spinning half revolution backward...");
-  myStepper.step(-stepsPerRev / 2); // Move 100 steps backward
-  delay(1000);
+  // Spin the motor 1 revolution slowly
+  for(int x = 0; x < stepsPerRev; x++) {
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(1000); // Slower speed
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(1000);
+  }
+
+  delay(1000); // Wait 1 second
+
+  // 2. Change the spinning direction (LOW = Counter-Clockwise)
+  digitalWrite(dirPin, LOW);
+
+  // Spin the motor 1 revolution quickly
+  for(int x = 0; x < stepsPerRev; x++) {
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(500); // Faster speed
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(500);
+  }
+
+  delay(1000); // Wait 1 second before repeating
 }
