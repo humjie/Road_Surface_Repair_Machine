@@ -140,25 +140,25 @@ void setup() {
     &current_z_publisher,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-    "/current_z_pos");
+    "/current_z_pos"));
 
   RCCHECK(rclc_publisher_init_default(
     &change_main_state_publisher,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-    "/change_main_state");
+    "/change_main_state"));
 
   RCCHECK(rclc_subscription_init_default(
     &target_z_sub,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-    "/target_z");
+    "/target_z"));
 
   RCCHECK(rclc_subscription_init_default(
     &main_state_sub,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-    "/main_state");
+    "/main_state"));
 
   const unsigned int timer_timeout_ms = 100;
   RCCHECK(rclc_timer_init_default2(

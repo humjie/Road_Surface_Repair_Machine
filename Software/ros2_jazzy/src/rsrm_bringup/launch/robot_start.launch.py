@@ -2,38 +2,16 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 def generate_launch_description():
-    agent_wheel = Node(
+    # Consolidated micro-ROS agent handling all serial devices
+    agent_multiserial = Node(
         package='micro_ros_agent',
         executable='micro_ros_agent',
-        name='agent_wheel',
-        arguments=['serial', '--dev', '/dev/esp_wheel', '-b', '115200'],
-        output='screen',
-        respawn=True,
-    )
-
-    agent_stepper = Node(
-        package='micro_ros_agent',
-        executable='micro_ros_agent',
-        name='agent_stepper',
-        arguments=['serial', '--dev', '/dev/esp_stepper', '-b', '115200'],
-        output='screen',
-        respawn=True,
-    )
-
-    agent_zaxis = Node(
-        package='micro_ros_agent',
-        executable='micro_ros_agent',
-        name='agent_zaxis',
-        arguments=['serial', '--dev', '/dev/esp_zaxis', '-b', '115200'],
-        output='screen',
-        respawn=True,
-    )
-
-    agent_pump_cam = Node(
-        package='micro_ros_agent',
-        executable='micro_ros_agent',
-        name='agent_pump_cam',
-        arguments=['serial', '--dev', '/dev/esp_pump_cam', '-b', '115200'],
+        name='agent_multiserial',
+        arguments=[
+            'multiserial', 
+            '--devs', '/dev/esp_wheel /dev/esp_stepper /dev/esp_zaxis /dev/esp_cam', 
+            '-b', '115200'
+        ],
         output='screen',
         respawn=True,
     )
@@ -97,23 +75,11 @@ def generate_launch_description():
         output='screen',
     )
 
-    foxglove_bridge = Node(
-        package='foxglove_bridge',
-        executable='foxglove_bridge',
-        name='foxglove_bridge',
-        parameters=[{'port': 8765}],
-        output='screen',
-    )
-
     return LaunchDescription([
-        agent_wheel,
-        agent_stepper,
-        agent_zaxis,
-        agent_pump_cam,
+        agent_multiserial,
         main_state_repeater,
         tof_costmap,
         tof_visualiser,
         filling_control,
         custom_camera,
-        foxglove_bridge,
     ])
