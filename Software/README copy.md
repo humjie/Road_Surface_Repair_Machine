@@ -48,6 +48,7 @@ source install/local_setup.bash
 
 ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/esp_stepper
 
+ros2 run micro_ros_agent micro_ros_agent multiserial --devs /dev/esp_stepper /dev/esp_cam /dev/esp_wheel /dev/esp_zaxis
 
 
 

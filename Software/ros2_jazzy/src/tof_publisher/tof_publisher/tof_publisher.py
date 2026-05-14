@@ -10,18 +10,33 @@ class TofPublisher(Node):
     def __init__(self):
         super().__init__('tof_publisher')
         
-        self.ser = serial.Serial('/dev/ttyUSB4', 115200, timeout=1)
+        # Initialize serial connection
+        self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
         time.sleep(2)  # Wait for the serial connection to initialize
         
         self.publisher_ = self.create_publisher(Range, 'tof_data', 10)
-        timer_period = 0.5                                            # seconds
+        timer_period = 0.5  # seconds
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
     def timer_callback(self):
         if self.ser.in_waiting > 0:
-            self.ser.reset_input_buffer()
-            msg = Range()
+            
+            # Read the line and decode it. Use errors='ignore' to handle corrupted bytes safely.
+            raw_line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+            
+            # If the line is empty after stripping whitespace, skip this iteration
+            if not raw_line:
+                return
 
+            # Safely attempt to convert the string to a float
+            try:
+                distance_mm = float(raw_line)
+            except ValueError:
+                self.get_logger().warn(f"Received invalid or incomplete data from sensor: '{raw_line}'")
+                return
+
+            # Construct and publish the message
+            msg = Range()
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.header.frame_id = 'tof_sensor_link'
             msg.radiation_type = Range.INFRARED # ToF uses IR lasers
@@ -29,10 +44,15 @@ class TofPublisher(Node):
             msg.min_range = 0.02                # 2 cm minimum
             msg.max_range = 4.00                # 400 cm maximum
 
-            msg.range = float(self.ser.readline().decode('utf-8').rstrip()) / 1000.0
+            # Convert mm to meters as required by the sensor_msgs/Range specification
+            msg.range = distance_mm / 1000.0
 
             self.publisher_.publish(msg)
             self.get_logger().info('Publishing: "%s"' % msg.range)
+
+            # Optional: If your sensor publishes data much faster than 0.5s (2Hz) 
+            # and you want to prevent lag/backlog, flush the buffer *after* reading a valid line.
+            self.ser.reset_input_buffer()
 
     def destroy_node(self):
         if hasattr(self, 'ser') and self.ser.is_open:
@@ -43,10 +63,14 @@ class TofPublisher(Node):
 def main(args=None):
     rclpy.init(args=args)
     tof_publisher = TofPublisher()
-    rclpy.spin(tof_publisher)
-    tof_publisher.destroy_node()
-    rclpy.shutdown()
-
+    
+    try:
+        rclpy.spin(tof_publisher)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        tof_publisher.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

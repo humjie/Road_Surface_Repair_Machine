@@ -20,8 +20,8 @@
 #define REAR_AIN2 22
 #define REAR_PWMA 23
 
-#define REAR_BIN1 17
-#define REAR_BIN2 16
+#define REAR_BIN1 16
+#define REAR_BIN2 17
 #define REAR_PWMB 4
 #define REAR_STBY 19
 

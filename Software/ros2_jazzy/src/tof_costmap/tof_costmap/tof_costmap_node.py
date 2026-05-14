@@ -28,12 +28,12 @@ class TofCostmapNode(Node):
 
         # ── Topics & frame ────────────────────────────────────────────────────
         self.declare_parameter('input_topic',        '/tof_data')
-        self.declare_parameter('output_topic',       'tof_costmap/markers')
-        self.declare_parameter('ground_plane_topic', 'tof_costmap/ground_plane')
+        self.declare_parameter('output_topic',       '/tof_costmap/markers')
+        self.declare_parameter('ground_plane_topic', '/tof_costmap/ground_plane')
         self.declare_parameter('position_topic',     '/current_xy_pos')
         self.declare_parameter('target_xy_topic',    '/target_xy')
         self.declare_parameter('main_state_topic',   '/main_state')
-        self.declare_parameter('frame_id',           'tof_sensor_link')
+        self.declare_parameter('frame_id',           '/tof_sensor_link')
 
         # ── Scan geometry ─────────────────────────────────────────────────────
         self.declare_parameter('x_speed_mm_s',  10.0)
@@ -80,24 +80,24 @@ class TofCostmapNode(Node):
 
         self.current_baseline_m = self.sensor_to_ground_m
         self.cube_size_m        = self.scan_step_mm / 1000.0
-        self.target_tolerance_m  = max(self.cube_size_m * 0.25, 0.001)
+        self.target_tolerance_m = max(self.cube_size_m * 0.25, 0.001)
 
         # ── State machine ─────────────────────────────────────────────────────
-        self.scanning_active = False
+        self.scanning_active   = False
         self._result_published = False
-        self.main_state = 'free'
-        self._scan_path = []
-        self._scan_index = 0
-        self._current_target = None
+        self.main_state        = 'free'
+        self._scan_path        = []
+        self._scan_index       = 0
+        self._current_target   = None
         self._last_target_sent = None
-        self.last_stamp_sec = None
+        self.last_stamp_sec    = None
 
         # ── Data stores ───────────────────────────────────────────────────────
         # (grid_x, grid_y) → (x_m, y_m, distance_m, is_hole)
         self.points_by_cell: dict = {}
         self.recent_readings: list = []
         self.position_buffer = deque()
-        self.last_grid_cell = None
+        self.last_grid_cell  = None
 
         # ── ROS I/O ───────────────────────────────────────────────────────────
         self.subscription = self.create_subscription(
@@ -110,14 +110,14 @@ class TofCostmapNode(Node):
             String, self.main_state_topic, self.main_state_callback, 10)
 
         self.change_main_state_pub = self.create_publisher(String, '/change_main_state', 10)
-        self.target_pub = self.create_publisher(Point, self.target_xy_topic, 10)
-        self.marker_pub  = self.create_publisher(MarkerArray, self.output_topic,       10)
-        self.ground_pub  = self.create_publisher(MarkerArray, self.ground_plane_topic, 10)
+        self.target_pub  = self.create_publisher(Point,       self.target_xy_topic,    10)
+        self.marker_pub  = self.create_publisher(MarkerArray, self.output_topic,        10)
+        self.ground_pub  = self.create_publisher(MarkerArray, self.ground_plane_topic,  10)
 
         # Result published ONCE at scan end as a JSON string.
         # Schema: { baseline_m, clusters: [ {id, cells, volume_cm3,
         #           centroid:{x,y,z}, points:[{x,y,depth_m},...] }, ... ] }
-        self.result_pub = self.create_publisher(String, '/tof_costmap', LATCHED_QOS)  # latched: visualiser receives even if late
+        self.result_pub = self.create_publisher(String, '/tof_costmap', LATCHED_QOS)
 
         self.reset_srv = self.create_service(
             Trigger, 'tof_costmap/reset', self._reset_callback)
@@ -146,19 +146,20 @@ class TofCostmapNode(Node):
         self.points_by_cell.clear()
         self.recent_readings.clear()
         self.position_buffer.clear()
-        self.last_grid_cell = None
+        self.last_grid_cell    = None
         self.current_baseline_m = self.sensor_to_ground_m
-        self.scanning_active = False
+        self.scanning_active   = False
         self._result_published = False
-        self._scan_path = []
-        self._scan_index = 0
-        self._current_target = None
+        self._scan_path        = []
+        self._scan_index       = 0
+        self._current_target   = None
         self._last_target_sent = None
         response.success = True
         response.message = 'Scan reset — ready for a new sweep.'
         self.get_logger().info('Scan reset via service call.')
         return response
 
+    # ──────────────────────────────────────────────────────────────────────────
     def position_callback(self, msg: PointStamped):
         stamp_sec = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
         x_m = float(msg.point.x) * self.position_scale_m
@@ -166,9 +167,10 @@ class TofCostmapNode(Node):
         self.position_buffer.append((stamp_sec, x_m, y_m))
         self._prune_position_buffer(stamp_sec)
 
+    # ──────────────────────────────────────────────────────────────────────────
     def main_state_callback(self, msg: String):
         state = msg.data.strip() or 'free'
-        previous_state = self.main_state
+        previous_state  = self.main_state
         self.main_state = state
 
         if state == 'scanning':
@@ -176,23 +178,25 @@ class TofCostmapNode(Node):
                 self._start_scan()
             return
 
+        # Any transition away from 'scanning' ends the scan
         if previous_state == 'scanning' and self.scanning_active:
             self.scanning_active = False
             if not self._result_published:
                 self._publish_result_once()
                 self._result_published = True
 
+    # ──────────────────────────────────────────────────────────────────────────
     def _start_scan(self):
         self.points_by_cell.clear()
         self.recent_readings.clear()
         self.position_buffer.clear()
-        self.last_grid_cell = None
+        self.last_grid_cell    = None
         self.current_baseline_m = self.sensor_to_ground_m
-        self.scanning_active = True
+        self.scanning_active   = True
         self._result_published = False
-        self._scan_path = self._build_scan_path()
-        self._scan_index = 0
-        self._current_target = None
+        self._scan_path        = self._build_scan_path()
+        self._scan_index       = 0
+        self._current_target   = None
         self._last_target_sent = None
         self._publish_next_target()
 
@@ -221,6 +225,7 @@ class TofCostmapNode(Node):
             return
 
         if self._scan_index >= len(self._scan_path):
+            # Scan path exhausted — publish result and signal done
             if not self._result_published:
                 self._publish_result_once()
                 self._result_published = True
@@ -230,6 +235,10 @@ class TofCostmapNode(Node):
 
         x_mm, y_mm = self._scan_path[self._scan_index]
         self._current_target = (x_mm, y_mm)
+
+        # FIX: Guard used tuple comparison, which is correct, but also guard
+        # against the case where _last_target_sent matches to avoid re-publishing
+        # the same waypoint on every timer tick
         if self._last_target_sent == self._current_target:
             return
 
@@ -241,7 +250,7 @@ class TofCostmapNode(Node):
         self._last_target_sent = self._current_target
 
     def _publish_change_main_state(self, state: str):
-        msg = String()
+        msg      = String()
         msg.data = state
         self.change_main_state_pub.publish(msg)
 
@@ -257,9 +266,11 @@ class TofCostmapNode(Node):
         if current is None:
             return False
         x_m, y_m = current
+        # FIX: target coords are in mm; convert to metres before comparing
         tx_m = self._current_target[0] * self.position_scale_m
         ty_m = self._current_target[1] * self.position_scale_m
-        return abs(x_m - tx_m) <= self.target_tolerance_m and abs(y_m - ty_m) <= self.target_tolerance_m
+        return (abs(x_m - tx_m) <= self.target_tolerance_m and
+                abs(y_m - ty_m) <= self.target_tolerance_m)
 
     def _scan_tick(self):
         if not self.scanning_active:
@@ -269,6 +280,8 @@ class TofCostmapNode(Node):
             return
         if self._target_reached():
             self._scan_index += 1
+            self._current_target   = None   # FIX: clear so next target is sent immediately
+            self._last_target_sent = None   # FIX: allow next waypoint to be published
             self._publish_next_target()
 
     def _prune_position_buffer(self, now_sec: float):
@@ -295,13 +308,13 @@ class TofCostmapNode(Node):
     def _get_synced_position(self, stamp_sec: float):
         if not self.position_buffer:
             return None
-        best = None
+        best    = None
         best_dt = None
         for ts, x_m, y_m in self.position_buffer:
             dt = abs(stamp_sec - ts)
             if best_dt is None or dt < best_dt:
                 best_dt = dt
-                best = (x_m, y_m)
+                best    = (x_m, y_m)
         if best_dt is None or best_dt > self.sync_tolerance_s:
             return None
         return best
@@ -341,37 +354,21 @@ class TofCostmapNode(Node):
         }
 
     # ──────────────────────────────────────────────────────────────────────────
-    def update_scan_state(self, dt: float):
-        if self.state == self.SCANNING_X:
-            self.current_x_mm += self.x_speed_mm_s * dt * self.direction_x
-            at_right = self.direction_x ==  1 and self.current_x_mm >= self.x_length_mm
-            at_left  = self.direction_x == -1 and self.current_x_mm <= 0.0
-            if at_right or at_left:
-                self.current_x_mm = self.x_length_mm if at_right else 0.0
-                self.target_y_mm  = self.current_y_mm + self.scan_step_mm
-                self.direction_x *= -1
-                self.state = self.STEPPING_Y
-
-        elif self.state == self.STEPPING_Y:
-            self.current_y_mm += self.y_speed_mm_s * dt
-            if self.current_y_mm >= self.target_y_mm:
-                self.current_y_mm = self.target_y_mm
-                if self.current_y_mm > self.y_length_mm:
-                    self.state = self.DONE
-                    self.get_logger().info('ToF scan complete.')
-                    self._publish_result_once()
-                else:
-                    self.last_grid_cell = None
-                    self.state = self.SCANNING_X
+    # FIX: Removed dead update_scan_state() method that referenced undefined
+    #      attributes (self.state, self.SCANNING_X, self.STEPPING_Y, self.DONE,
+    #      self.direction_x, self.current_x_mm, self.target_y_mm,
+    #      self.current_y_mm) — this was leftover from an older state-machine
+    #      design and would raise AttributeError if ever called.
+    # ──────────────────────────────────────────────────────────────────────────
 
     def update_costmap(self, distance_m: float, x_m: float, y_m: float):
         grid_x = int(round(x_m / self.cube_size_m))
         grid_y = int(round(y_m / self.cube_size_m))
-        cell = (grid_x, grid_y)
+        cell   = (grid_x, grid_y)
         if cell == self.last_grid_cell:
             return
 
-        z_m = max(0.0, distance_m)
+        z_m    = max(0.0, distance_m)
         is_hole = z_m > self.current_baseline_m + self.hole_tolerance_m
         self.points_by_cell[cell] = (x_m, y_m, z_m, is_hole)
         self.last_grid_cell = cell
@@ -393,7 +390,7 @@ class TofCostmapNode(Node):
                 visited.add(cell)
                 keys.append(cell)
                 gx, gy = cell
-                queue.extend([(gx+1,gy),(gx-1,gy),(gx,gy+1),(gx,gy-1)])
+                queue.extend([(gx+1, gy), (gx-1, gy), (gx, gy+1), (gx, gy-1)])
             clusters.append([
                 (self.points_by_cell[k][0],
                  self.points_by_cell[k][1],
@@ -414,22 +411,21 @@ class TofCostmapNode(Node):
             cz  += -(self.current_baseline_m + dep / 2.0) * vol
         if tv == 0.0:
             return 0.0, 0.0, 0.0, 0.0
-        return tv, cx/tv, cy/tv, cz/tv
+        return tv, cx / tv, cy / tv, cz / tv
 
     # ──────────────────────────────────────────────────────────────────────────
     def _publish_result_once(self):
         """
-        Called exactly once when state → DONE.
-        Publishes a structured JSON String on tof_costmap/result.
-        The visualiser node subscribes to this and builds its display.
+        Called exactly once per scan.
+        Publishes a structured JSON String on /tof_costmap.
         """
         clusters = self._find_hole_clusters()
 
         payload = {
-            'baseline_m':   self.current_baseline_m,
-            'scan_step_m':  self.cube_size_m,
-            'total_holes':  len(clusters),
-            'clusters': []
+            'baseline_m':  self.current_baseline_m,
+            'scan_step_m': self.cube_size_m,
+            'total_holes': len(clusters),
+            'clusters':    []
         }
 
         for i, cluster in enumerate(clusters):
@@ -438,10 +434,10 @@ class TofCostmapNode(Node):
                 'id':         i + 1,
                 'cells':      len(cluster),
                 'volume_cm3': round(vol_m3 * 1e6, 4),
-                'centroid':   {'x': round(cx,4), 'y': round(cy,4), 'z': round(cz,4)},
+                'centroid':   {'x': round(cx, 4), 'y': round(cy, 4), 'z': round(cz, 4)},
                 'points': [
-                    {'x': round(x,4),
-                     'y': round(y,4),
+                    {'x': round(x, 4),
+                     'y': round(y, 4),
                      'depth_m': round(d - self.current_baseline_m, 5)}
                     for (x, y, d) in cluster
                 ]
@@ -454,7 +450,7 @@ class TofCostmapNode(Node):
 
         # Human-readable log summary
         lines = [
-            f'\n━━━ Scan Result ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+            '\n━━━ Scan Result ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
             f'  Baseline : {self.current_baseline_m:.4f} m',
             f'  Clusters : {len(clusters)}',
         ]
@@ -492,7 +488,7 @@ class TofCostmapNode(Node):
         m.lifetime.sec       = 0
         m.pose.position.x    = (self.x_length_mm / 2.0) / 1000.0
         m.pose.position.y    = (self.y_length_mm / 2.0) / 1000.0
-        m.pose.position.z    = 0.0   # Z=0 is the floor reference
+        m.pose.position.z    = 0.0
         m.scale.x            = self.x_length_mm / 1000.0
         m.scale.y            = self.y_length_mm / 1000.0
         m.scale.z            = 0.001
@@ -546,32 +542,6 @@ class TofCostmapNode(Node):
 
     # ──────────────────────────────────────────────────────────────────────────
     def publish_markers(self, stamp):
-        """
-        Z-axis layout — sensor at origin, Z=0 is the floor reference plane.
-
-        GROUND cubes (dist <= baseline + tolerance)
-        ────────────────────────────────────────────
-          Each ground cube reaches DOWN from the sensor to the actual measured
-          surface.  The cube's BOTTOM face sits at Z=0 (floor reference) and
-          extends UPWARD (toward the sensor) by cube_size.
-          This makes every ground cube a "column" that connects the floor plane
-          to the sensor — identical in concept to hole cubes, just going up.
-
-          display_z_centre = cube_size / 2     (always the same fixed Z)
-          scale_z          = cube_size          (fixed)
-
-          Surface variation is shown entirely through colour — see _ground_color.
-
-        HOLE cubes (dist > baseline + tolerance)
-        ─────────────────────────────────────────
-          The void hangs BELOW Z=0 by the excess depth:
-            depth_m          = dist_m - baseline_m
-            display_z_centre = -(depth_m / 2)
-            scale_z          = depth_m   (min = cube_size)
-
-          Top face is flush with Z=0, so ground and hole cubes share the same
-          floor plane seam — the costmap is one continuous connected surface.
-        """
         clusters     = self._find_hole_clusters()
         marker_array = MarkerArray()
 
@@ -603,16 +573,12 @@ class TofCostmapNode(Node):
             next_id             += 1
 
             if is_hole:
-                # Void below Z=0: top at 0, bottom at -depth, centre at -depth/2
                 depth_m           = z_m - self.current_baseline_m
                 height            = max(depth_m, self.cube_size_m)
                 m.scale.z         = height
                 m.pose.position.z = -(height / 2.0)
                 m.color           = self._hole_color(depth_m)
             else:
-                # Ground column: bottom at Z=0, top at +cube_size, centre at +half
-                # All ground cubes share the same Z regardless of measured distance.
-                # Colour encodes the surface variation instead.
                 m.scale.z         = self.cube_size_m
                 m.pose.position.z = half
                 m.color           = self._ground_color(z_m)
@@ -637,7 +603,7 @@ class TofCostmapNode(Node):
 
             t.pose.position.x = cx
             t.pose.position.y = cy
-            t.pose.position.z = cz + 0.03        # 30 mm above centroid
+            t.pose.position.z = cz + 0.03
             t.scale.z         = self.cube_size_m * 2.5
             t.color           = ColorRGBA(r=1.0, g=1.0, b=0.2, a=1.0)
             t.text            = f'#{i+1}  {vol_cm3:.1f} cm³\n{len(cluster)} cells'

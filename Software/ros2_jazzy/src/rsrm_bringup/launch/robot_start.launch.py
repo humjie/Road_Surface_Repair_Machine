@@ -3,6 +3,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     # Consolidated micro-ROS agent handling all serial devices
+    # Maps: wheel, stepper, z-axis, and camera ESPs
     agent_multiserial = Node(
         package='micro_ros_agent',
         executable='micro_ros_agent',
@@ -16,6 +17,7 @@ def generate_launch_description():
         respawn=True,
     )
 
+    # State management for the repair process
     main_state_repeater = Node(
         package='main_state_repeater',
         executable='main_state_repeater',
@@ -28,6 +30,7 @@ def generate_launch_description():
         output='screen',
     )
 
+    # ToF Sensor processing for surface mapping
     tof_costmap = Node(
         package='tof_costmap',
         executable='tof_costmap_node',
@@ -41,6 +44,7 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Visual feedback for the ToF costmap
     tof_visualiser = Node(
         package='tof_visualiser',
         executable='tof_visualiser',
@@ -51,6 +55,7 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Logic for material filling and actuator coordination
     filling_control = Node(
         package='filling_control',
         executable='filling_control',
@@ -68,6 +73,7 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Specialized camera node
     custom_camera = Node(
         package='custom_camera',
         executable='custom_camera',
