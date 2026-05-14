@@ -10,7 +10,7 @@ class TofPublisher(Node):
     def __init__(self):
         super().__init__('tof_publisher')
         
-        self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+        self.ser = serial.Serial('/dev/ttyUSB4', 115200, timeout=1)
         time.sleep(2)  # Wait for the serial connection to initialize
         
         self.publisher_ = self.create_publisher(Range, 'tof_data', 10)

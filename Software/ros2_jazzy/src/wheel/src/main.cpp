@@ -22,7 +22,7 @@
 
 #define REAR_BIN1 17
 #define REAR_BIN2 16
-#define REAR_PWMB 2
+#define REAR_PWMB 4
 #define REAR_STBY 19
 
 // --- Function Prototypes for PlatformIO ---
