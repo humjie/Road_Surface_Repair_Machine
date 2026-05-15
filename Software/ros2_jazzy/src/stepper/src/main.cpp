@@ -509,6 +509,7 @@ void loop() {
 
   // --- Handle HOME command ---
   if (execute_home) {
+    last_ping_time = millis(); // add this line!
     homeX();
     homeY();
     homingDone   = true;

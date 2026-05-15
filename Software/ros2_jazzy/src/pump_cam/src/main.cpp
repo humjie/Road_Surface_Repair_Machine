@@ -40,7 +40,7 @@
 #define CAM_IN2_PIN       18
 #define CAM_PWM_PIN       19
 
-#define CAM_IN3_PIN       23
+#define CAM_IN3_PIN       15
 #define CAM_IN4_PIN       22
 #define CAM_PWM_PIN2      21
 
@@ -52,7 +52,7 @@
 #define CAM_PWM_CHANNEL2  2
 
 #define CAM_MOTOR_SPEED   200
-#define CAM_ROTATE_MS     500
+#define CAM_ROTATE_MS     2000
 
 // ======================================================
 // Pump state
@@ -66,7 +66,7 @@ unsigned long pump_stop_ms = 0;
 bool cam_active = false;
 unsigned long cam_stop_ms = 0;
 bool cam_is_up = false;
-
+bool cam_position_known = false;
 // ======================================================
 // micro-ROS entities
 // ======================================================
@@ -204,26 +204,32 @@ void pump_cmd_callback(const void * msgin) {
 }
 
 void cam_cmd_callback(const void * msgin) {
-
   const std_msgs__msg__String * msg =
     (const std_msgs__msg__String *)msgin;
 
   String cmd = String(msg->data.data);
-
   cmd.trim();
   cmd.toLowerCase();
 
-  if (cmd == "up") {
+  // Ignore if motor is currently running
+  if (cam_active) return;
 
-    if (!cam_active && !cam_is_up) {
+  if (cmd == "up") {
+    if (!cam_is_up) {          // only move if not already up
       cam_start(true);
+    } else {
+      Serial.println("Already up, ignoring.");
     }
 
   } else if (cmd == "down") {
-
-    if (!cam_active && cam_is_up) {
+    if (cam_is_up) {           // only move if not already down
       cam_start(false);
+    } else {
+      Serial.println("Already down, ignoring.");
     }
+
+  } else if (cmd == "toggle") { // useful for Foxglove button
+    cam_start(!cam_is_up);
   }
 }
 
