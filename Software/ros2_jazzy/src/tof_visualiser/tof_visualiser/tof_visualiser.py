@@ -28,18 +28,13 @@ from scipy.interpolate import RectBivariateSpline, NearestNDInterpolator
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import HistoryPolicy
 from geometry_msgs.msg import Point
 from std_msgs.msg import String, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-LATCHED_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    history=HistoryPolicy.KEEP_LAST,
-    depth=1,
-)
+# Removed explicit latched QoS; use default QoS or simple depth args.
 
 
 # ── colour helpers ────────────────────────────────────────────────────────────
@@ -216,8 +211,8 @@ class HoleVisualiserNode(Node):
         self._smooth_stats = {}        # {cluster_id: (vol_m3, cx, cy, cz)}
 
         self.sub = self.create_subscription(
-            String, self.result_topic, self._result_cb, LATCHED_QOS)
-        self.result_pub = self.create_publisher(String, '/tof_result', LATCHED_QOS)
+            String, self.result_topic, self._result_cb, 10)
+        self.result_pub = self.create_publisher(String, '/tof_result', 10)
 
         self.hole_pub    = self.create_publisher(MarkerArray, 'tof_result/hole_markers',    10)
         self.text_pub    = self.create_publisher(MarkerArray, 'tof_result/text_markers',    10)

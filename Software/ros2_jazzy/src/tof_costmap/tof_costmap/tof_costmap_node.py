@@ -27,7 +27,7 @@ from collections import deque
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import HistoryPolicy
 from sensor_msgs.msg import Range
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA, String
@@ -35,12 +35,7 @@ from geometry_msgs.msg import Point, PointStamped
 from std_srvs.srv import Trigger
 
 
-LATCHED_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    history=HistoryPolicy.KEEP_LAST,
-    depth=1,
-)
+# Custom QoS removed — use default QoS or simple depth args instead
 
 
 class TofCostmapNode(Node):
@@ -64,7 +59,7 @@ class TofCostmapNode(Node):
         self.declare_parameter('scan_step_mm',  10.0)
 
         # ── Hole detection ────────────────────────────────────────────────────
-        self.declare_parameter('sensor_to_ground_m',      0.05)
+        self.declare_parameter('sensor_to_ground_m',      0.035)
         self.declare_parameter('hole_tolerance_m',        0.01)
         self.declare_parameter('hole_depth_range_m',      0.10)
         self.declare_parameter('ground_variance_range_m', 0.005)
@@ -122,14 +117,8 @@ class TofCostmapNode(Node):
         self.position_buffer = deque()
 
         # ── ROS I/O ───────────────────────────────────────────────────────────
-        # Use sensor-data QoS (best-effort) to match the publisher
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=5,
-        )
         self.subscription = self.create_subscription(
-            Range, self.input_topic, self.range_callback, sensor_qos)
+            Range, self.input_topic, self.range_callback, 10)
 
         self.position_sub = self.create_subscription(
             PointStamped, self.position_topic, self.position_callback, 10)
@@ -137,15 +126,15 @@ class TofCostmapNode(Node):
         self.main_state_sub = self.create_subscription(
             String, self.main_state_topic, self.main_state_callback, 10)
 
-        # Latched so late-joining state-manager still gets the 'free' signal
+        # change_main_state published with default QoS (depth=10)
         self.change_main_state_pub = self.create_publisher(
-            String, '/change_main_state', LATCHED_QOS)
+            String, '/change_main_state', 10)
 
         self.target_pub  = self.create_publisher(Point,       self.target_xy_topic,    10)
         self.marker_pub  = self.create_publisher(MarkerArray, self.output_topic,        10)
         self.ground_pub  = self.create_publisher(MarkerArray, self.ground_plane_topic,  10)
 
-        self.result_pub = self.create_publisher(String, '/tof_costmap', LATCHED_QOS)
+        self.result_pub = self.create_publisher(String, '/tof_costmap', 10)
 
         self.reset_srv = self.create_service(
             Trigger, 'tof_costmap/reset', self._reset_callback)
@@ -255,7 +244,8 @@ class TofCostmapNode(Node):
             if not self._result_published:
                 self._publish_result_once()
                 self._result_published = True
-            self._publish_change_main_state('free')
+            # Per system rules: scanning → wait_for_fill (operator gates the next step)
+            self._publish_change_main_state('wait_for_fill')
             self.scanning_active = False
             return
 

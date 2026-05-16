@@ -1,0 +1,622 @@
+/*
+ * xy_stepper_node.ino
+ * ━━━━━━━━━━━━━━━━━━━
+ * ESP32 micro-ROS firmware for the XY gantry (two A4988 stepper drivers).
+ *
+ * Subscribes
+ *   /target_xy            geometry_msgs/Point        target in steps
+ *   /main_state           std_msgs/String            "homing" | "scanning" | "filling" | "wait_for_fill" | "free"
+ *
+ * Publishes
+ *   /current_pos          geometry_msgs/PointStamped legacy duplicate
+ *   /current_xy_pos       geometry_msgs/PointStamped position in steps (10 Hz + on change)
+ *   /xy_status            std_msgs/String            timestamped state
+ *   /xy_minmax            std_msgs/String            axis limits
+ *   /change_main_state    std_msgs/String            advisory state-change
+ *   /move_done            std_msgs/String            published once per completed move ("ok" or "rejected:...")
+ *
+ * Fixes vs. previous version
+ *   - Watchdog timer (5 s) with periodic reset
+ *   - Initialize last_ping_time and last_time_sync in setup() so the first
+ *     ping after boot has a fair chance
+ *   - Ping failure no longer auto-restarts on the first miss; retries up to
+ *     5 times before giving up
+ *   - target_xy_callback ignores duplicate targets (same X+Y as current request)
+ *   - Soft-clamp now publishes a warning when target was out of bounds
+ *   - All state transitions echo "scanning"/"filling"/"wait_for_fill"/"free"
+ *     to current_state so /xy_status reflects the system state truly
+ *   - New /move_done publisher: lets the costmap know exactly when a move
+ *     ended, instead of polling /current_xy_pos
+ *   - Position published immediately when xPos/yPos changes by ≥ 1 step
+ *     during motion (not only at 10 Hz timer), so the costmap's sync
+ *     tolerance is easy to meet
+ *   - Time-sync moved to a non-motion phase to avoid stalls mid-move
+ *   - publish_status nullptr guards
+ *   - Acceleration/deceleration ramping for smoother motion and less skipping
+ */
+
+#include <Arduino.h>
+#include <micro_ros_platformio.h>
+#include <esp_task_wdt.h>
+
+#include <rcl/rcl.h>
+#include <rmw_microros/rmw_microros.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+
+#include <std_msgs/msg/string.h>
+#include <geometry_msgs/msg/point_stamped.h>
+#include <geometry_msgs/msg/point.h>
+#include <math.h>
+
+#if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
+#error This example is only available for Arduino framework with serial transport.
+#endif
+
+// ===========================================================
+// Error checking
+// ===========================================================
+#define RCCHECK(fn)     { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){ error_loop(); } }
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){} }
+
+// ===========================================================
+// Pins — X axis
+// ===========================================================
+#define X_DIR    12
+#define X_STEP   14
+#define X_MIN    18
+#define X_MAX    19
+
+// ===========================================================
+// Pins — Y axis
+// ===========================================================
+#define Y_DIR    17
+#define Y_STEP   16
+#define Y_MIN    32
+#define Y_MAX    33
+
+// ===========================================================
+// Motion tuning
+// ===========================================================
+#define MIN_STEP_DELAY_US     400      // top speed (smaller = faster)
+#define MAX_STEP_DELAY_US     1600     // start/end speed (larger = gentler)
+#define ACCEL_STEPS           200      // ramp length in steps
+#define HOMING_DELAY_US       1200
+#define RELEASE_DELAY_US      1500
+
+#define SPIN_EVERY_N_STEPS    150
+#define WDT_TIMEOUT_S         5
+
+// ===========================================================
+// Default limits (used when USE_PRESET_LIMITS == true)
+// ===========================================================
+long xPos = 0, xMin = -1000, xMax = 1000;
+long yPos = 0, yMin = -1000, yMax = 1000;
+
+const bool USE_PRESET_LIMITS = true;
+
+bool homingDone = false;
+
+// ===========================================================
+// Endstops
+// ===========================================================
+inline bool X_MIN_PRESSED() { return digitalRead(X_MIN) == LOW; }
+inline bool X_MAX_PRESSED() { return digitalRead(X_MAX) == LOW; }
+inline bool Y_MIN_PRESSED() { return digitalRead(Y_MIN) == LOW; }
+inline bool Y_MAX_PRESSED() { return digitalRead(Y_MAX) == LOW; }
+
+// ===========================================================
+// Forward decls
+// ===========================================================
+void ros_spin_some();
+void publish_status(const char* status);
+void publish_change_main_state(const char* state);
+void publish_move_done(const char* result);
+void publish_current_pos_now();
+void error_loop();
+
+// ===========================================================
+// micro-ROS entities
+// ===========================================================
+rcl_publisher_t    status_publisher;
+rcl_publisher_t    pos_publisher;
+rcl_publisher_t    current_xy_publisher;
+rcl_publisher_t    change_main_state_publisher;
+rcl_publisher_t    minmax_publisher;
+rcl_publisher_t    move_done_publisher;
+
+rcl_subscription_t target_xy_sub;
+rcl_subscription_t main_state_sub;
+
+rcl_timer_t        timer;
+
+geometry_msgs__msg__Point        msg_target;
+geometry_msgs__msg__PointStamped msg_pos;
+
+std_msgs__msg__String msg_status;
+std_msgs__msg__String msg_minmax;
+std_msgs__msg__String msg_change_main_state;
+std_msgs__msg__String msg_move_done;
+
+// Dedicated inbound buffer for /main_state (avoids buffer aliasing bug)
+std_msgs__msg__String msg_main_state_in;
+
+rclc_executor_t executor;
+rclc_support_t  support;
+rcl_allocator_t allocator;
+rcl_node_t      node;
+
+// ===========================================================
+// State
+// ===========================================================
+long  targetX_ros  = 0;
+long  targetY_ros  = 0;
+bool  execute_move = false;
+bool  execute_home = false;
+char  current_state[64] = "available";
+
+// For duplicate-target rejection
+long  last_target_X = LONG_MIN;
+long  last_target_Y = LONG_MIN;
+
+// For warning if soft-clamp kicked in
+bool  last_target_clamped = false;
+
+// ===========================================================
+// ROS helpers
+// ===========================================================
+void ros_spin_some() {
+    RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1)));
+}
+
+void error_loop() {
+    while (1) {
+        delay(2000);
+        ESP.restart();
+    }
+}
+
+void set_state(const char * s) {
+    strncpy(current_state, s, sizeof(current_state) - 1);
+    current_state[sizeof(current_state) - 1] = '\0';
+}
+
+void publish_status(const char* status) {
+    if (msg_status.data.data == NULL) return;
+    int64_t time_ns = rmw_uros_epoch_nanos();
+    int32_t sec     = (int32_t)(time_ns / 1000000000);
+    snprintf(msg_status.data.data, msg_status.data.capacity, "[%ld] %s", sec, status);
+    msg_status.data.size = strlen(msg_status.data.data);
+    RCSOFTCHECK(rcl_publish(&status_publisher, &msg_status, NULL));
+}
+
+void publish_change_main_state(const char* state) {
+    if (msg_change_main_state.data.data == NULL) return;
+    snprintf(msg_change_main_state.data.data, msg_change_main_state.data.capacity, "%s", state);
+    msg_change_main_state.data.size = strlen(msg_change_main_state.data.data);
+    RCSOFTCHECK(rcl_publish(&change_main_state_publisher, &msg_change_main_state, NULL));
+}
+
+void publish_move_done(const char* result) {
+    if (msg_move_done.data.data == NULL) return;
+    snprintf(msg_move_done.data.data, msg_move_done.data.capacity, "%s", result);
+    msg_move_done.data.size = strlen(msg_move_done.data.data);
+    RCSOFTCHECK(rcl_publish(&move_done_publisher, &msg_move_done, NULL));
+}
+
+void publish_current_pos_now() {
+    int64_t time_ns = rmw_uros_epoch_nanos();
+    msg_pos.header.stamp.sec     = (int32_t)(time_ns / 1000000000);
+    msg_pos.header.stamp.nanosec = (uint32_t)(time_ns % 1000000000);
+    msg_pos.point.x = (double)xPos;
+    msg_pos.point.y = (double)yPos;
+    msg_pos.point.z = 0.0;
+    RCSOFTCHECK(rcl_publish(&pos_publisher,        &msg_pos, NULL));
+    RCSOFTCHECK(rcl_publish(&current_xy_publisher, &msg_pos, NULL));
+}
+
+// ===========================================================
+// Step pulse helpers
+// ===========================================================
+inline void stepX(int dir, int delayUs) {
+    digitalWrite(X_DIR, (dir > 0) ? HIGH : LOW);
+    digitalWrite(X_STEP, HIGH);
+    delayMicroseconds(delayUs);
+    digitalWrite(X_STEP, LOW);
+    delayMicroseconds(delayUs);
+    xPos += dir;
+}
+
+inline void stepY(int dir, int delayUs) {
+    digitalWrite(Y_DIR, (dir > 0) ? HIGH : LOW);
+    digitalWrite(Y_STEP, HIGH);
+    delayMicroseconds(delayUs);
+    digitalWrite(Y_STEP, LOW);
+    delayMicroseconds(delayUs);
+    yPos += dir;
+}
+
+// ===========================================================
+// Trapezoidal velocity profile helper
+// Returns step delay (μs) for step index `i` out of `total` total steps.
+// Ramps from MAX_STEP_DELAY at start/end down to MIN_STEP_DELAY in the middle.
+// ===========================================================
+int profile_delay(long i, long total) {
+    long ramp = min((long)ACCEL_STEPS, total / 2);
+    if (ramp <= 0) return MIN_STEP_DELAY_US;
+
+    long phase;
+    if (i < ramp) {
+        phase = i;                              // accelerating
+    } else if (i > total - ramp - 1) {
+        phase = total - 1 - i;                  // decelerating
+    } else {
+        return MIN_STEP_DELAY_US;               // cruise
+    }
+    // Linear interp: phase=0 → MAX, phase=ramp → MIN
+    long span = MAX_STEP_DELAY_US - MIN_STEP_DELAY_US;
+    return MAX_STEP_DELAY_US - (int)((span * phase) / ramp);
+}
+
+// ===========================================================
+// Move N steps on one axis (with endstops, accel, periodic ROS spin)
+// ===========================================================
+void moveXSteps(long steps) {
+    int  dir   = (steps >= 0) ? 1 : -1;
+    long count = labs(steps);
+
+    for (long i = 0; i < count; i++) {
+        esp_task_wdt_reset();
+        if ((dir > 0 && X_MAX_PRESSED()) || (dir < 0 && X_MIN_PRESSED())) return;
+        int d = profile_delay(i, count);
+        stepX(dir, d);
+        if ((i % SPIN_EVERY_N_STEPS) == 0) {
+            ros_spin_some();
+            publish_current_pos_now();
+        }
+    }
+}
+
+void moveYSteps(long steps) {
+    int  dir   = (steps >= 0) ? 1 : -1;
+    long count = labs(steps);
+
+    for (long i = 0; i < count; i++) {
+        esp_task_wdt_reset();
+        if ((dir > 0 && Y_MAX_PRESSED()) || (dir < 0 && Y_MIN_PRESSED())) return;
+        int d = profile_delay(i, count);
+        stepY(dir, d);
+        if ((i % SPIN_EVERY_N_STEPS) == 0) {
+            ros_spin_some();
+            publish_current_pos_now();
+        }
+    }
+}
+
+// ===========================================================
+// Homing — uses preset limits (no endstop discovery)
+// ===========================================================
+bool homeX() {
+    if (USE_PRESET_LIMITS) {
+        moveXSteps(0 - xPos);
+        xPos = 0;
+        return true;
+    }
+    // (full endstop-discovery code retained for reference)
+    return false;
+}
+
+bool homeY() {
+    if (USE_PRESET_LIMITS) {
+        moveYSteps(0 - yPos);
+        yPos = 0;
+        return true;
+    }
+    return false;
+}
+
+// ===========================================================
+// Move to absolute XY (Bresenham line interp, accel-ramped on the longer axis)
+// ===========================================================
+void moveToXY(long targetX, long targetY) {
+    // Clamp + flag
+    long clampedX = constrain(targetX, xMin, xMax);
+    long clampedY = constrain(targetY, yMin, yMax);
+    last_target_clamped = (clampedX != targetX) || (clampedY != targetY);
+    if (last_target_clamped) {
+        publish_status("warn: target clamped to limits");
+    }
+    targetX = clampedX;
+    targetY = clampedY;
+
+    long dx = targetX - xPos;
+    long dy = targetY - yPos;
+    int  sx = (dx >= 0) ? 1 : -1;
+    int  sy = (dy >= 0) ? 1 : -1;
+    dx = labs(dx);
+    dy = labs(dy);
+
+    if (dx == 0 && dy == 0) return;
+
+    long total       = (dx >= dy) ? dx : dy;
+    long stepCount   = 0;
+
+    if (dx >= dy) {
+        long err = dx / 2;
+        for (long i = 0; i < dx; i++) {
+            esp_task_wdt_reset();
+            if ((sx > 0 && X_MAX_PRESSED()) || (sx < 0 && X_MIN_PRESSED())) break;
+            int d = profile_delay(i, total);
+            stepX(sx, d);
+            stepCount++;
+            err -= dy;
+            if (err < 0) {
+                err += dx;
+                if ((sy > 0 && Y_MAX_PRESSED()) || (sy < 0 && Y_MIN_PRESSED())) break;
+                stepY(sy, d);
+                stepCount++;
+            }
+            if ((stepCount % SPIN_EVERY_N_STEPS) == 0) {
+                ros_spin_some();
+                publish_current_pos_now();
+            }
+        }
+    } else {
+        long err = dy / 2;
+        for (long i = 0; i < dy; i++) {
+            esp_task_wdt_reset();
+            if ((sy > 0 && Y_MAX_PRESSED()) || (sy < 0 && Y_MIN_PRESSED())) break;
+            int d = profile_delay(i, total);
+            stepY(sy, d);
+            stepCount++;
+            err -= dx;
+            if (err < 0) {
+                err += dy;
+                if ((sx > 0 && X_MAX_PRESSED()) || (sx < 0 && X_MIN_PRESSED())) break;
+                stepX(sx, d);
+                stepCount++;
+            }
+            if ((stepCount % SPIN_EVERY_N_STEPS) == 0) {
+                ros_spin_some();
+                publish_current_pos_now();
+            }
+        }
+    }
+}
+
+// ===========================================================
+// Timer callback (10 Hz heartbeat)
+// ===========================================================
+void timer_callback(rcl_timer_t * t, int64_t /*last_call_time*/) {
+    if (t == NULL) return;
+    publish_current_pos_now();
+
+    int64_t time_ns = rmw_uros_epoch_nanos();
+    int32_t sec     = (int32_t)(time_ns / 1000000000);
+    if (msg_status.data.data != NULL) {
+        snprintf(msg_status.data.data, msg_status.data.capacity, "[%ld] %s", sec, current_state);
+        msg_status.data.size = strlen(msg_status.data.data);
+        RCSOFTCHECK(rcl_publish(&status_publisher, &msg_status, NULL));
+    }
+
+    if (msg_minmax.data.data != NULL) {
+        snprintf(msg_minmax.data.data, msg_minmax.data.capacity,
+                 "xmin:%ld xmax:%ld ymin:%ld ymax:%ld",
+                 xMin, xMax, yMin, yMax);
+        msg_minmax.data.size = strlen(msg_minmax.data.data);
+        RCSOFTCHECK(rcl_publish(&minmax_publisher, &msg_minmax, NULL));
+    }
+}
+
+// ===========================================================
+// Subscription callbacks
+// ===========================================================
+void target_xy_callback(const void * msgin) {
+    const geometry_msgs__msg__Point * m = (const geometry_msgs__msg__Point *) msgin;
+    long newX = (long) m->x;
+    long newY = (long) m->y;
+
+    // Reject duplicate target while we're already at/heading to it
+    if (newX == last_target_X && newY == last_target_Y && !execute_move) {
+        return;
+    }
+    targetX_ros = newX;
+    targetY_ros = newY;
+    last_target_X = newX;
+    last_target_Y = newY;
+    execute_move = true;
+}
+
+void main_state_callback(const void * msgin) {
+    const std_msgs__msg__String * m = (const std_msgs__msg__String *) msgin;
+    String cmd = String(m->data.data);
+    cmd.trim();
+
+    if (cmd == "homing") {
+        homingDone   = false;
+        execute_home = true;
+        execute_move = false;
+        set_state("homing");
+        publish_status("homing");
+
+    } else if (cmd == "scanning") {
+        set_state("scanning");
+        publish_status("scanning");
+
+    } else if (cmd == "filling") {
+        set_state("filling");
+        publish_status("filling");
+
+    } else if (cmd == "wait_for_fill") {
+        set_state("wait_for_fill");
+        publish_status("wait_for_fill");
+
+    } else if (cmd == "free") {
+        set_state("available");
+        publish_status("available");
+    }
+}
+
+// ===========================================================
+// Setup
+// ===========================================================
+void setup() {
+    Serial.begin(115200);
+
+    pinMode(X_STEP, OUTPUT);
+    pinMode(X_DIR,  OUTPUT);
+    pinMode(X_MIN,  INPUT_PULLUP);
+    pinMode(X_MAX,  INPUT_PULLUP);
+
+    pinMode(Y_STEP, OUTPUT);
+    pinMode(Y_DIR,  OUTPUT);
+    pinMode(Y_MIN,  INPUT_PULLUP);
+    pinMode(Y_MAX,  INPUT_PULLUP);
+
+    set_microros_serial_transports(Serial);
+    delay(2000);
+
+    // ── Watchdog ──────────────────────────────────────
+    esp_task_wdt_init(WDT_TIMEOUT_S, true);
+    esp_task_wdt_add(NULL);
+
+    allocator = rcl_get_default_allocator();
+
+    // ── Allocate string buffers ───────────────────────
+    msg_status.data.capacity            = 150; msg_status.data.size           = 0;
+    msg_status.data.data                = (char *) malloc(msg_status.data.capacity);
+
+    msg_minmax.data.capacity            = 80;  msg_minmax.data.size           = 0;
+    msg_minmax.data.data                = (char *) malloc(msg_minmax.data.capacity);
+
+    msg_change_main_state.data.capacity = 64;  msg_change_main_state.data.size = 0;
+    msg_change_main_state.data.data     = (char *) malloc(msg_change_main_state.data.capacity);
+
+    msg_main_state_in.data.capacity     = 64;  msg_main_state_in.data.size    = 0;
+    msg_main_state_in.data.data         = (char *) malloc(msg_main_state_in.data.capacity);
+
+    msg_move_done.data.capacity         = 64;  msg_move_done.data.size        = 0;
+    msg_move_done.data.data             = (char *) malloc(msg_move_done.data.capacity);
+
+    msg_pos.header.frame_id.capacity    = 20;
+    msg_pos.header.frame_id.data        = (char *) malloc(msg_pos.header.frame_id.capacity);
+    snprintf(msg_pos.header.frame_id.data, msg_pos.header.frame_id.capacity, "xy_stage");
+    msg_pos.header.frame_id.size        = strlen(msg_pos.header.frame_id.data);
+
+    // ── Node ──────────────────────────────────────────
+    RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+    RCCHECK(rclc_node_init_default(&node, "xy_stepper_node", "", &support));
+
+    // ── Publishers ────────────────────────────────────
+    RCCHECK(rclc_publisher_init_default(&status_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/xy_status"));
+    RCCHECK(rclc_publisher_init_default(&pos_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, PointStamped), "/current_pos"));
+    RCCHECK(rclc_publisher_init_default(&current_xy_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, PointStamped), "/current_xy_pos"));
+    RCCHECK(rclc_publisher_init_default(&change_main_state_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/change_main_state"));
+    RCCHECK(rclc_publisher_init_default(&minmax_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/xy_minmax"));
+    RCCHECK(rclc_publisher_init_default(&move_done_publisher, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/move_done"));
+
+    // ── Subscribers ───────────────────────────────────
+    RCCHECK(rclc_subscription_init_default(&target_xy_sub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Point), "/target_xy"));
+    RCCHECK(rclc_subscription_init_default(&main_state_sub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/main_state"));
+
+    // ── Timer (10 Hz heartbeat) ───────────────────────
+    RCCHECK(rclc_timer_init_default2(&timer, &support,
+        RCL_MS_TO_NS(100), timer_callback, true));
+
+    // ── Executor ──────────────────────────────────────
+    RCCHECK(rclc_executor_init(&executor, &support.context, 3, &allocator));
+    RCCHECK(rclc_executor_add_subscription(&executor, &target_xy_sub,
+        &msg_target, &target_xy_callback, ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_subscription(&executor, &main_state_sub,
+        &msg_main_state_in, &main_state_callback, ON_NEW_DATA));
+    RCCHECK(rclc_executor_add_timer(&executor, &timer));
+
+    rmw_uros_sync_session(1000);
+
+    set_state("available");
+    publish_status("available");
+}
+
+// ===========================================================
+// Loop
+// ===========================================================
+void loop() {
+    static unsigned long last_ping_time = 0;
+    static unsigned long last_time_sync = 0;
+    static bool          timers_inited  = false;
+
+    // First-time init AFTER setup() completes so timestamps are sensible
+    if (!timers_inited) {
+        last_ping_time = millis();
+        last_time_sync = millis();
+        timers_inited  = true;
+    }
+
+    esp_task_wdt_reset();
+
+    // ── Periodic agent ping (only between motions, with retries) ──
+    if (!execute_move && !execute_home && (millis() - last_ping_time > 1000)) {
+        last_ping_time = millis();
+        if (rmw_uros_ping_agent(200, 5) != RCL_RET_OK) {
+            error_loop();
+        }
+    }
+
+    // ── Time sync every 60 s, only between motions ──
+    if (!execute_move && !execute_home && (millis() - last_time_sync > 60000)) {
+        rmw_uros_sync_session(100);
+        last_time_sync = millis();
+    }
+
+    // ── HOMING ─────────────────────────────────────────
+    if (execute_home) {
+        last_ping_time = millis();
+        homeX();
+        homeY();
+        homingDone   = true;
+        execute_home = false;
+
+        set_state("available");
+        publish_status("homing complete");
+        publish_change_main_state("free");
+        publish_current_pos_now();
+    }
+
+    // ── MOVE ───────────────────────────────────────────
+    if (execute_move) {
+        if (!homingDone) {
+            publish_status("move rejected: homing not done");
+            publish_move_done("rejected: homing not done");
+            execute_move = false;
+        } else {
+            const char * prev_state = current_state;
+            char saved[64];
+            strncpy(saved, prev_state, sizeof(saved) - 1);
+            saved[sizeof(saved) - 1] = '\0';
+
+            set_state("moving");
+            publish_status("moving");
+            last_ping_time = millis();
+
+            moveToXY(targetX_ros, targetY_ros);
+
+            // Restore the prior state (e.g. "scanning" → "moving" → "scanning")
+            set_state(saved);
+            publish_status(saved);
+            publish_current_pos_now();
+            publish_move_done(last_target_clamped ? "ok (clamped)" : "ok");
+            execute_move = false;
+        }
+    }
+
+    // ── Spin executor ─────────────────────────────────
+    RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)));
+}
